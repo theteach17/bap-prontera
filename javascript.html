@@ -1,0 +1,1324 @@
+<script>
+  // Global Variables
+  var calendar;
+  var allRooms = []; 
+  var currentUser = null; 
+  var currentSheetData = {}; 
+
+  function getSessionToken() {
+    return currentUser && currentUser.token ? currentUser.token : '';
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function escapeAttr(value) {
+    return escapeHtml(value).replace(/`/g, '&#96;');
+  }
+
+  function sanitizeUrl(url) {
+    const value = String(url ?? '').trim();
+    if (/^https?:\/\//i.test(value)) return value;
+    return 'https://via.placeholder.com/80?text=Room';
+  }
+
+  function handleServerError(err, fallbackTitle = 'เกิดข้อผิดพลาด') {
+    const message = err && err.message ? err.message : String(err || 'ไม่สามารถดำเนินการได้');
+    if (message.includes('SESSION_EXPIRED') || message.includes('PERMISSION_DENIED')) {
+      currentUser = null;
+      localStorage.removeItem('mrbs_user');
+      updateUIState();
+    }
+    Swal.fire(fallbackTitle, message.replace('SESSION_EXPIRED: ', '').replace('PERMISSION_DENIED: ', ''), 'error');
+  }
+
+  function validateCapacityClient() {
+    const select = document.getElementById('roomId');
+    const headcountEl = document.getElementById('headcount');
+    if (!select || select.selectedIndex <= 0 || !headcountEl) return true;
+    const option = select.options[select.selectedIndex];
+    const capacity = parseInt(option.getAttribute('data-capacity'), 10) || 0;
+    headcountEl.setAttribute('max', capacity || '');
+    const headcount = parseInt(headcountEl.value, 10);
+    if (capacity > 0 && headcount > capacity) {
+      headcountEl.classList.add('is-invalid');
+      return false;
+    }
+    headcountEl.classList.remove('is-invalid');
+    return true;
+  }
+
+
+  document.addEventListener('DOMContentLoaded', function() {
+    loadRooms();
+    checkLocalSession();
+    
+    // ตั้งค่า Flatpickr ให้หน้าต่างเลือกเวลาดูเป็นมืออาชีพและใช้งานง่ายสุดๆ
+    const flatpickrConfig = {
+        enableTime: true,
+        dateFormat: "Y-m-dTH:i",
+        altInput: true,
+        altFormat: "j F Y, เวลา H:i น.",
+        locale: "th",
+        time_24hr: true,
+        minuteIncrement: 5 // ขยับทีละ 5 นาที
+    };
+    
+    // สั่งให้ Flatpickr ไปทำงานกับช่อง Input ที่มี id="startTime" และ id="endTime"
+    flatpickr("#startTime", flatpickrConfig);
+    flatpickr("#endTime", flatpickrConfig);
+  });
+
+  // --- 1. Load Rooms & Colors ---
+  function loadRooms() {
+    google.script.run
+      .withSuccessHandler(function(rooms) {
+        allRooms = Array.isArray(rooms) ? rooms : [];
+        renderRoomSidebar(allRooms);
+        populateRoomDropdown(allRooms);
+        if (calendar) {
+          calendar.refetchEvents();
+        } else {
+          initCalendar();
+        }
+      })
+      .withFailureHandler(function(err) {
+        handleServerError(err, 'โหลดข้อมูลห้องไม่สำเร็จ');
+      })
+      .getRoomsData();
+  }
+
+  // --- 2. Init FullCalendar ---
+  function initCalendar() {
+    var calendarEl = document.getElementById('calendar');
+    calendar = new FullCalendar.Calendar(calendarEl, {
+      initialView: 'dayGridMonth',
+      headerToolbar: {
+        left: 'prev,next today',
+        center: 'title',
+        right: 'dayGridMonth,timeGridWeek,timeGridDay'
+      },
+      locale: 'th',
+      selectable: true,
+      dayMaxEvents: true, 
+      
+      events: function(info, successCallback, failureCallback) {
+        google.script.run.withSuccessHandler(function(events) {
+          events.forEach(evt => {
+            const room = allRooms.find(r => r.roomId == evt.resourceId);
+            const roomColor = (room && room.color) ? room.color : '#3788d8';
+            evt.backgroundColor = roomColor;
+            evt.borderColor = roomColor;
+            evt.textColor = '#ffffff';
+          });
+          successCallback(events);
+        }).getBookingsData();
+      },
+      
+      dateClick: function(info) {
+        openBookingModal(info.dateStr);
+      },
+      
+      eventClick: function(info) {
+        handleEventClick(info);
+      }
+    });
+    calendar.render();
+  }
+
+  // --- 3. Event Interaction (View vs Edit) ---
+  function handleEventClick(info) {
+    const props = info.event.extendedProps || {};
+    const roomName = props.roomName || '-';
+    const layoutLink = props.layoutUrl ? `<br><b>📎 ไฟล์จัดโต๊ะ:</b> <a href="${escapeAttr(props.layoutUrl)}" target="_blank" rel="noopener">เปิดไฟล์แนบ</a>` : '';
+
+    let htmlContent = `
+       <div class="text-start">
+         <b>📍 ห้อง:</b> ${escapeHtml(roomName)}<br>
+         <b>👤 ผู้จอง:</b> ${escapeHtml(props.requester)}<br>
+         <b>👥 จำนวน:</b> ${escapeHtml(props.headcount)} คน<br>
+         <b>🕒 เริ่ม:</b> ${escapeHtml(info.event.start ? info.event.start.toLocaleString('th-TH') : '-')}<br>
+         <b>🕓 สิ้นสุด:</b> ${escapeHtml(info.event.end ? info.event.end.toLocaleString('th-TH') : '-')}<br>
+         <b>📝 หัวข้อ:</b> ${escapeHtml(props.description)}
+         ${props.setupDetails ? `<br><b>🧰 รายละเอียดจัดโต๊ะ:</b> ${escapeHtml(props.setupDetails)}` : ''}
+         ${layoutLink}
+       </div>
+    `;
+
+    if (currentUser) {
+        Swal.fire({
+            title: escapeHtml(info.event.title),
+            html: htmlContent,
+            icon: 'info',
+            showDenyButton: true,
+            showCancelButton: true,
+            confirmButtonText: '<i class="bi bi-pencil"></i> แก้ไข',
+            denyButtonText: '<i class="bi bi-trash"></i> ยกเลิกการจอง',
+            cancelButtonText: 'ปิด',
+            confirmButtonColor: '#ffc107',
+            denyButtonColor: '#dc3545'
+        }).then((result) => {
+            if (result.isConfirmed) {
+                openEditBooking(info.event);
+            } else if (result.isDenied) {
+                confirmCancelBooking(info.event.id);
+            }
+        });
+    } else {
+        Swal.fire({
+            title: escapeHtml(info.event.title),
+            html: htmlContent,
+            icon: 'info',
+            confirmButtonText: 'ปิด'
+        });
+    }
+  }
+
+  // --- 4. UI Helpers ---
+
+  function renderRoomSidebar(rooms) {
+    const container = document.getElementById('roomListContainer');
+    let html = '';
+
+    if (!rooms || rooms.length === 0) {
+      container.innerHTML = '<div class="text-center p-3 text-muted">ไม่พบห้องประชุมที่ว่าง</div>';
+      return;
+    }
+
+    rooms.forEach(room => {
+      let imgUrl = sanitizeUrl(room.image);
+      let styleColor = room.color ? `border-left: 5px solid ${escapeAttr(room.color)};` : '';
+      let facilityIconsHtml = renderFacilitiesIcons(room.facilities);
+
+      html += `
+        <div class="list-group-item d-flex align-items-center mb-2 shadow-sm rounded-1" style="${styleColor}">
+          <img src="${escapeAttr(imgUrl)}" class="rounded me-3" width="50" height="50" style="object-fit:cover;" alt="room image">
+          <div style="flex:1;">
+            <h6 class="mb-0 fw-bold">${escapeHtml(room.roomName)}</h6>
+            <div class="d-flex align-items-center flex-wrap gap-2 mt-1">
+                 <small class="text-muted"><i class="bi bi-people-fill"></i> ${escapeHtml(room.capacity)}</small>
+                 ${facilityIconsHtml}
+            </div>
+          </div>
+        </div>
+      `;
+    });
+    container.innerHTML = html;
+    initTooltips();
+  }
+
+  function renderFacilitiesIcons(facilitiesStr) {
+    if (!facilitiesStr) return '';
+    const map = { 'LED': 'bi-display', 'TV': 'bi-tv', 'PROJECTOR': 'bi-projector', 'VGA': 'bi-plug', 'HDMI': 'bi-hdmi', 'SOUND': 'bi-speaker', 'CONFERENCE': 'bi-camera-video' };
+    let iconsHtml = '';
+    const items = String(facilitiesStr).split(',').map(s => s.trim().toUpperCase());
+    items.forEach(item => {
+        if (map[item]) {
+            iconsHtml += `<span class="badge bg-light text-secondary border cursor-pointer"
+                                data-bs-toggle="tooltip" data-bs-placement="top" title="${escapeAttr(item)}">
+                                <i class="bi ${map[item]}"></i>
+                          </span>`;
+        }
+    });
+    return iconsHtml;
+  }
+
+  function initTooltips() {
+    const tooltipTriggerList = document.querySelectorAll('[data-bs-toggle="tooltip"]');
+    const tooltipList = [...tooltipTriggerList].map(tooltipTriggerEl => new bootstrap.Tooltip(tooltipTriggerEl));
+  }
+
+  function populateRoomDropdown(rooms) {
+    const select = document.getElementById('roomId');
+    let options = '<option value="" selected disabled>-- กรุณาเลือกห้อง --</option>';
+    rooms.forEach(room => {
+      options += `<option value="${escapeAttr(room.roomId)}" data-name="${escapeAttr(room.roomName)}" data-capacity="${escapeAttr(room.capacity)}" data-require-setup="${escapeAttr(room.requireSetup)}">
+                    ${escapeHtml(room.roomName)} (รองรับ ${escapeHtml(room.capacity)} คน)
+                  </option>`;
+    });
+    select.innerHTML = options;
+  }
+
+  function updateRoomName() {
+    const select = document.getElementById('roomId');
+    if (select.selectedIndex > 0) {
+      const option = select.options[select.selectedIndex];
+      document.getElementById('roomName').value = option.getAttribute('data-name');
+
+      const requireSetup = option.getAttribute('data-require-setup') === 'true';
+      const setupSection = document.getElementById('setupSection');
+      const setupFile = document.getElementById('setupFile');
+      if (requireSetup) {
+          setupSection.style.display = 'flex';
+          setupFile.setAttribute('required', 'required');
+      } else {
+          setupSection.style.display = 'none';
+          setupFile.removeAttribute('required');
+      }
+      validateCapacityClient();
+    }
+  }
+
+  // --- 5. Booking Actions (Save/Edit/Cancel) ---
+
+function openBookingModal(dateStr) {
+    document.getElementById('bookingForm').reset();
+    document.getElementById('bookingId').value = '';
+    document.getElementById('isEdit').value = 'false';
+    document.getElementById('bookingModalTitle').innerHTML = '<i class="bi bi-pencil-square"></i> แบบฟอร์มจองห้องประชุม';
+    
+    // ซ่อนกล่องจัดโต๊ะและปลด Required ไว้ก่อนเสมอเมื่อเปิดฟอร์มจองใหม่
+    const setupSection = document.getElementById('setupSection');
+    const setupFile = document.getElementById('setupFile');
+    if (setupSection) setupSection.style.display = 'none';
+    if (setupFile) setupFile.removeAttribute('required');
+
+    // ดึง Instance ของ Flatpickr มาเพื่อสั่งงาน
+    const fpStart = document.getElementById('startTime')._flatpickr;
+    const fpEnd = document.getElementById('endTime')._flatpickr;
+    
+    // ล้างค่า Flatpickr ให้ว่างก่อนเริ่มใหม่
+    if (fpStart) fpStart.clear();
+    if (fpEnd) fpEnd.clear();
+    
+    if(dateStr) {
+      let defaultStart, defaultEnd;
+      
+      if (dateStr.length === 10) { 
+        // กรณีผู้ใช้คลิกช่องวันที่ในมุมมองรายเดือน (Month View)
+        // กำหนดค่าเริ่มต้นของวันนั้นเป็น 09:00 น. และสิ้นสุด 10:00 น.
+        defaultStart = dateStr + 'T09:00';
+        defaultEnd = dateStr + 'T10:00';
+      } else { 
+        // กรณีผู้ใช้คลิกเวลาแบบเจาะจงในมุมมองรายสัปดาห์/รายวัน (Week/Day View)
+        defaultStart = dateStr.slice(0, 16); 
+        
+        // สร้างเวลาสิ้นสุดโดยบวกเพิ่ม 1 ชั่วโมงจากเวลาที่คลิก
+        let d = new Date(dateStr);
+        d.setHours(d.getHours() + 1);
+        const offset = d.getTimezoneOffset() * 60000;
+        defaultEnd = new Date(d.getTime() - offset).toISOString().slice(0, 16);
+      }
+      
+      // ใช้คำสั่ง setDate ของ Flatpickr เพื่อยัดค่าใส่วันที่และเวลาให้ผู้ใช้อัตโนมัติ
+      if (fpStart) {
+        fpStart.setDate(defaultStart);
+      } else {
+        document.getElementById('startTime').value = defaultStart; // เผื่อกรณี Flatpickr ยังไม่โหลด
+      }
+      
+      if (fpEnd) {
+        fpEnd.setDate(defaultEnd);
+      } else {
+        document.getElementById('endTime').value = defaultEnd; // เผื่อกรณี Flatpickr ยังไม่โหลด
+      }
+    }
+    
+    new bootstrap.Modal(document.getElementById('bookingModal')).show();
+  }
+
+  function openEditBooking(event) {
+    const props = event.extendedProps || {};
+    document.getElementById('bookingId').value = event.id;
+    document.getElementById('isEdit').value = 'true';
+    document.getElementById('topic').value = props.description || '';
+    document.getElementById('requester').value = props.requester || '';
+    document.getElementById('requesterEmail').value = props.requesterEmail || '';
+    document.getElementById('roomName').value = props.roomName || '';
+    document.getElementById('headcount').value = props.headcount || '';
+    document.getElementById('setupDetails').value = props.setupDetails || '';
+
+    const rId = props.roomId;
+    const select = document.getElementById('roomId');
+    if (rId) {
+        select.value = rId;
+        updateRoomName();
+    }
+
+    // หากเคยแนบไฟล์จัดโต๊ะไว้แล้ว ไม่บังคับแนบใหม่ตอนแก้ไข เว้นแต่ผู้ใช้ต้องการเปลี่ยนไฟล์เอง
+    if (props.layoutUrl) {
+      const setupFile = document.getElementById('setupFile');
+      if (setupFile) setupFile.removeAttribute('required');
+    }
+
+    const toLocalISO = (date) => {
+        if (!date) return '';
+        const offset = date.getTimezoneOffset() * 60000;
+        return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+    };
+
+    const startStr = toLocalISO(event.start);
+    const endStr = event.end ? toLocalISO(event.end) : '';
+
+    const fpStart = document.getElementById('startTime')._flatpickr;
+    const fpEnd = document.getElementById('endTime')._flatpickr;
+
+    if (fpStart && startStr) {
+      fpStart.setDate(startStr);
+    } else {
+      document.getElementById('startTime').value = startStr;
+    }
+
+    if (fpEnd && endStr) {
+      fpEnd.setDate(endStr);
+    } else {
+      document.getElementById('endTime').value = endStr;
+    }
+
+    document.getElementById('bookingModalTitle').innerHTML = '<i class="bi bi-pencil-square"></i> แก้ไขข้อมูลการจอง';
+    new bootstrap.Modal(document.getElementById('bookingModal')).show();
+  }
+
+function toBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = error => reject(error);
+    });
+  }
+
+async function handleFormSubmit(e) {
+    e.preventDefault();
+
+    const topic = document.getElementById('topic').value.trim();
+    const requester = document.getElementById('requester').value.trim();
+    const email = document.getElementById('requesterEmail').value.trim();
+    const roomName = document.getElementById('roomName').value;
+    const headcount = document.getElementById('headcount').value;
+
+    if (!email) {
+        Swal.fire({
+            title: 'ข้อมูลไม่ครบถ้วน',
+            text: 'กรุณาระบุ "อีเมลผู้จอง" เพื่อใช้ในการรับข้อมูลยืนยันและสรุปผลการประเมิน',
+            icon: 'warning',
+            confirmButtonColor: '#ffc107'
+        });
+        return;
+    }
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        Swal.fire('รูปแบบอีเมลไม่ถูกต้อง', 'กรุณาตรวจสอบอีเมลผู้จองอีกครั้ง', 'warning');
+        return;
+    }
+
+    if (!validateCapacityClient()) {
+        const select = document.getElementById('roomId');
+        const capacity = select.options[select.selectedIndex].getAttribute('data-capacity');
+        Swal.fire('จำนวนผู้เข้าประชุมเกินความจุห้อง', `ห้องนี้รองรับได้สูงสุด ${capacity} คน`, 'warning');
+        return;
+    }
+
+    const startObj = new Date(document.getElementById('startTime').value);
+    const endObj = new Date(document.getElementById('endTime').value);
+
+    if (isNaN(startObj.getTime()) || isNaN(endObj.getTime())) {
+        Swal.fire('วันเวลาไม่ถูกต้อง', 'กรุณาเลือกเวลาเริ่มและเวลาสิ้นสุดให้ครบถ้วน', 'warning');
+        return;
+    }
+
+    if (endObj <= startObj) {
+        Swal.fire({
+            title: 'เวลาไม่ถูกต้อง',
+            text: 'เวลาสิ้นสุดการประชุม ต้องอยู่หลังจากเวลาเริ่มต้นเสมอ',
+            icon: 'warning',
+            confirmButtonColor: '#ffc107'
+        });
+        return;
+    }
+
+    const fileInput = document.getElementById('setupFile');
+    let base64File = '';
+    let fileName = '';
+
+    const setupSection = document.getElementById('setupSection');
+    if (setupSection && setupSection.style.display !== 'none' && fileInput && fileInput.files.length > 0) {
+        const file = fileInput.files[0];
+        const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'application/pdf'];
+        if (!allowedTypes.includes(file.type)) {
+            Swal.fire('ชนิดไฟล์ไม่ถูกต้อง', 'กรุณาอัปโหลดเฉพาะไฟล์รูปภาพหรือ PDF', 'error');
+            return;
+        }
+        if (file.size > 2 * 1024 * 1024) {
+            Swal.fire('ไฟล์มีขนาดใหญ่เกินไป', 'กรุณาอัปโหลดไฟล์ภาพหรือ PDF ขนาดไม่เกิน 2MB', 'error');
+            return;
+        }
+        fileName = file.name;
+        base64File = await toBase64(file);
+    }
+
+    const formatDateTime = (dateObj) => {
+        return dateObj.toLocaleDateString('th-TH', { year: 'numeric', month: 'long', day: 'numeric' }) +
+               ' เวลา ' + dateObj.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }) + ' น.';
+    };
+    const startStrDisplay = formatDateTime(startObj);
+    const endStrDisplay = formatDateTime(endObj);
+
+    const isEdit = document.getElementById('isEdit').value === 'true';
+    const actionTitle = isEdit ? 'ยืนยันการแก้ไขข้อมูล' : 'ตรวจสอบและยืนยันการจอง';
+
+    const confirmHtml = `
+      <div class="text-start p-3 bg-light border rounded shadow-sm" style="font-size: 0.95em; color: #333;">
+          <div class="mb-2"><b class="text-primary"><i class="bi bi-card-text"></i> หัวข้อ:</b> ${escapeHtml(topic)}</div>
+          <div class="mb-2"><b><i class="bi bi-person"></i> ผู้จอง:</b> ${escapeHtml(requester)}</div>
+          <div class="mb-2"><b><i class="bi bi-envelope"></i> อีเมล:</b> ${escapeHtml(email)}</div>
+          <div class="mb-2"><b><i class="bi bi-door-open"></i> ห้องประชุม:</b> ${escapeHtml(roomName)} <span class="text-muted">(${escapeHtml(headcount)} ท่าน)</span></div>
+          <hr class="my-2 text-secondary">
+          <div class="mb-2 text-success"><b><i class="bi bi-play-circle"></i> เริ่มต้น:</b> ${escapeHtml(startStrDisplay)}</div>
+          <div class="mb-0 text-danger"><b><i class="bi bi-stop-circle"></i> สิ้นสุด:</b> ${escapeHtml(endStrDisplay)}</div>
+      </div>
+      <div class="mt-3 text-center" style="font-size: 0.95em;">
+          ต้องการ${isEdit ? 'บันทึกการแก้ไข' : 'ยืนยันการจองห้องประชุม'}ใช่หรือไม่?
+      </div>
+    `;
+
+    Swal.fire({
+        title: actionTitle,
+        html: confirmHtml,
+        icon: 'info',
+        showCancelButton: true,
+        confirmButtonColor: '#0d6efd',
+        cancelButtonColor: '#6c757d',
+        confirmButtonText: '<i class="bi bi-check-circle"></i> ยืนยัน',
+        cancelButtonText: 'ยกเลิก',
+        width: '500px'
+    }).then((result) => {
+        if (result.isConfirmed) {
+            Swal.fire({
+                title: 'กรุณาลงลายมือชื่อผู้จอง',
+                html: `
+                    <div style="text-align: center;">
+                        <canvas id="sigCanvas" width="350" height="150" style="border: 1px solid #ced4da; border-radius: 8px; background: #fff; touch-action: none; cursor: crosshair; box-shadow: inset 0 1px 3px rgba(0,0,0,0.1);"></canvas>
+                        <br>
+                        <button type="button" class="btn btn-sm btn-outline-danger mt-3" id="clearBtn"><i class="bi bi-eraser"></i> ล้างลายเซ็น</button>
+                    </div>
+                `,
+                showCancelButton: true,
+                confirmButtonText: '<i class="bi bi-send"></i> ส่งข้อมูลการจอง',
+                cancelButtonText: 'ยกเลิก',
+                allowOutsideClick: false,
+                didOpen: () => {
+                    const canvas = document.getElementById('sigCanvas');
+                    const ctx = canvas.getContext('2d');
+                    const clearBtn = document.getElementById('clearBtn');
+                    let isDrawing = false;
+
+                    function getPos(e) {
+                        const rect = canvas.getBoundingClientRect();
+                        const clientX = e.clientX || (e.touches && e.touches[0].clientX);
+                        const clientY = e.clientY || (e.touches && e.touches[0].clientY);
+                        return { x: clientX - rect.left, y: clientY - rect.top };
+                    }
+
+                    function startPosition(e) {
+                        isDrawing = true;
+                        const pos = getPos(e);
+                        ctx.beginPath();
+                        ctx.moveTo(pos.x, pos.y);
+                        e.preventDefault();
+                    }
+
+                    function endPosition() { isDrawing = false; }
+
+                    function draw(e) {
+                        if (!isDrawing) return;
+                        const pos = getPos(e);
+                        ctx.lineWidth = 3;
+                        ctx.lineCap = 'round';
+                        ctx.strokeStyle = '#000080';
+                        ctx.lineTo(pos.x, pos.y);
+                        ctx.stroke();
+                        e.preventDefault();
+                    }
+
+                    canvas.addEventListener('mousedown', startPosition);
+                    canvas.addEventListener('mouseup', endPosition);
+                    canvas.addEventListener('mousemove', draw);
+                    canvas.addEventListener('touchstart', startPosition, {passive: false});
+                    canvas.addEventListener('touchend', endPosition);
+                    canvas.addEventListener('touchmove', draw, {passive: false});
+
+                    clearBtn.addEventListener('click', () => {
+                        ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    });
+                },
+                preConfirm: () => {
+                    const canvas = document.getElementById('sigCanvas');
+                    const blank = document.createElement('canvas');
+                    blank.width = canvas.width;
+                    blank.height = canvas.height;
+
+                    if (canvas.toDataURL() === blank.toDataURL()) {
+                        Swal.showValidationMessage('กรุณาลงลายเซ็นก่อนส่งข้อมูล');
+                        return false;
+                    }
+                    return canvas.toDataURL('image/png');
+                }
+            }).then((sigResult) => {
+                if (sigResult.isConfirmed) {
+                    submitToServer(base64File, fileName, sigResult.value);
+                }
+            });
+        }
+    });
+  }
+
+  function submitToServer(base64File = '', fileName = '', signatureBase64 = '') {
+    const btn = document.getElementById('btnSubmit');
+    if (btn.disabled) return;
+    const originalText = btn.innerText;
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> กำลังบันทึก...';
+
+    Swal.fire({
+        title: 'กำลังสร้างเอกสารและบันทึกข้อมูล...',
+        html: 'กรุณารอสักครู่ ระบบกำลังประมวลผล<br><span style="font-size: 0.9em; color: #dc3545;">(ระบบกำลังสร้าง PDF บันทึกข้อความ ห้ามปิดหน้าจอเด็ดขาด)</span>',
+        allowOutsideClick: false,
+        allowEscapeKey: false,
+        showConfirmButton: false,
+        didOpen: () => { Swal.showLoading(); }
+    });
+
+    const formData = {
+      bookingId: document.getElementById('bookingId').value,
+      isEdit: document.getElementById('isEdit').value === 'true',
+      topic: document.getElementById('topic').value,
+      requester: document.getElementById('requester').value,
+      requesterEmail: document.getElementById('requesterEmail').value,
+      headcount: document.getElementById('headcount').value,
+      roomId: document.getElementById('roomId').value,
+      roomName: document.getElementById('roomName').value,
+      startTime: document.getElementById('startTime').value,
+      endTime: document.getElementById('endTime').value,
+      setupDetails: document.getElementById('setupDetails').value,
+      setupFileBase64: base64File,
+      setupFileName: fileName,
+      signatureBase64: signatureBase64
+    };
+
+    google.script.run
+      .withSuccessHandler(function(response) {
+        const modal = bootstrap.Modal.getInstance(document.getElementById('bookingModal'));
+        if(modal) modal.hide();
+
+        const memoPdfUrl = response && response.memoPdfUrl ? response.memoPdfUrl : '';
+        const emailWarning = response && response.emailWarning ? response.emailWarning : '';
+        const report = response && response.notificationReport ? response.notificationReport : null;
+        let successHtml = `
+          <div class="text-start">
+            <div class="mb-2">ระบบได้รับคำขอจองห้องประชุมแล้ว</div>
+            <div class="mb-2">เอกสารจะถูกส่งต่อเพื่อลงนามโดยอัตโนมัติ<br>ผู้จองไม่ต้องพิมพ์หรือเสนอเอกสารด้วยตนเอง</div>
+            <div>เมื่ออนุมัติครบถ้วน ระบบจะส่งลิงก์ไฟล์ฉบับสมบูรณ์ไปยังอีเมลของผู้จอง</div>
+          </div>
+        `;
+
+        if (report) {
+          successHtml += `<hr><div class="text-start small">` +
+            `<div><b>Admin PDF Email:</b> ${report.adminSent ? 'ส่งสำเร็จ' : '<span class="text-danger">ส่งไม่สำเร็จ</span>'}</div>` +
+            `<div><b>Requester Email:</b> ${report.requesterSent ? 'ส่งสำเร็จ' : 'ไม่ส่ง/ไม่มีอีเมล'}</div>` +
+            `<div><b>Officer Email:</b> ${report.officerSent ? 'ส่งสำเร็จ' : 'ไม่ส่ง/ไม่มีผู้รับผิดชอบห้อง'}</div>` +
+            `</div>`;
+        }
+        if (emailWarning) {
+          successHtml += `<div class="alert alert-warning mt-3 mb-0 text-start">${escapeHtml(emailWarning)}</div>`;
+        }
+
+        Swal.fire({
+            title: emailWarning ? 'บันทึกคำขอสำเร็จ แต่มีคำเตือน' : 'บันทึกคำขอสำเร็จ',
+            html: successHtml,
+            icon: emailWarning ? 'warning' : 'success',
+            confirmButtonColor: '#0d6efd'
+        });
+
+        calendar.refetchEvents();
+        if (currentUser) loadDashboardData(false);
+        btn.disabled = false;
+        btn.innerText = originalText;
+      })
+      .withFailureHandler(function(error) {
+        handleServerError(error);
+        btn.disabled = false;
+        btn.innerText = originalText;
+      })
+      .saveBooking(formData, getSessionToken());
+  }
+
+  function confirmCancelBooking(bookingId) {
+      Swal.fire({
+          title: 'ยืนยันการยกเลิก?',
+          html: '<div class="text-start">กรุณาระบุเหตุผลการยกเลิก เพื่อเก็บเป็นประวัติการตรวจสอบ</div>',
+          input: 'textarea',
+          inputPlaceholder: 'เช่น ผู้จองขอยกเลิก / เปลี่ยนวันประชุม / จองผิดห้อง',
+          inputAttributes: { maxlength: 500 },
+          icon: 'warning',
+          showCancelButton: true,
+          confirmButtonColor: '#d33',
+          confirmButtonText: 'ใช่, ยกเลิกเดี๋ยวนี้',
+          cancelButtonText: 'ปิด',
+          preConfirm: (value) => {
+            if (!value || !value.trim()) {
+              Swal.showValidationMessage('กรุณาระบุเหตุผลการยกเลิก');
+              return false;
+            }
+            return value.trim();
+          }
+      }).then((result) => {
+          if (result.isConfirmed) {
+              google.script.run
+                .withSuccessHandler(() => {
+                    Swal.fire('เรียบร้อย', 'การจองถูกยกเลิกแล้ว', 'success');
+                    calendar.refetchEvents();
+                    if (currentUser) loadDashboardData(false);
+                })
+                .withFailureHandler((err) => handleServerError(err))
+                .cancelBooking(bookingId, getSessionToken(), result.value);
+          }
+      });
+  }
+
+  // --- 6. Auth System (Login) ---
+
+  function openLoginModal() {
+      new bootstrap.Modal(document.getElementById('loginModal')).show();
+  }
+
+  function handleLoginSubmit(e) {
+      e.preventDefault();
+
+      const btn = document.querySelector('#loginModal button[type="submit"]');
+      if (btn.disabled) return;
+      const originalText = btn.innerText;
+
+      btn.disabled = true;
+      btn.innerHTML = 'Loading...';
+
+      const user = document.getElementById('loginUser').value;
+      const pass = document.getElementById('loginPass').value;
+
+      google.script.run.withSuccessHandler((userData) => {
+          currentUser = userData;
+          localStorage.setItem('mrbs_user', JSON.stringify(userData));
+          updateUIState();
+          bootstrap.Modal.getInstance(document.getElementById('loginModal')).hide();
+          Swal.fire('ยินดีต้อนรับ', `สวัสดีคุณ ${escapeHtml(userData.name)}`, 'success');
+          loadDashboardData(false);
+
+          btn.disabled = false;
+          btn.innerText = originalText;
+      }).withFailureHandler((err) => {
+          Swal.fire('Login Failed', err.message, 'error');
+          btn.disabled = false;
+          btn.innerText = originalText;
+      }).checkLogin(user, pass);
+  }
+
+  function handleLogout() {
+      const token = getSessionToken();
+      google.script.run.withSuccessHandler(() => {}).logoutSession(token);
+      currentUser = null;
+      localStorage.removeItem('mrbs_user');
+      updateUIState();
+      Swal.fire('Logged Out', 'ออกจากระบบเรียบร้อย', 'info');
+      const adminModal = bootstrap.Modal.getInstance(document.getElementById('adminModal'));
+      if(adminModal) adminModal.hide();
+  }
+
+  function checkLocalSession() {
+      const stored = localStorage.getItem('mrbs_user');
+      if (!stored) return;
+
+      try {
+        const parsed = JSON.parse(stored);
+        if (!parsed || !parsed.token) {
+          localStorage.removeItem('mrbs_user');
+          return;
+        }
+
+        google.script.run
+          .withSuccessHandler((userData) => {
+            currentUser = Object.assign({}, userData, { token: parsed.token });
+            localStorage.setItem('mrbs_user', JSON.stringify(currentUser));
+            updateUIState();
+            loadDashboardData(false);
+          })
+          .withFailureHandler(() => {
+            currentUser = null;
+            localStorage.removeItem('mrbs_user');
+            updateUIState();
+          })
+          .refreshSession(parsed.token);
+      } catch (e) {
+        localStorage.removeItem('mrbs_user');
+      }
+  }
+
+  function updateUIState() {
+      const dashboardLi = document.getElementById('dashboardMenuLi');
+      const dashboardCard = document.getElementById('dashboardCard');
+
+      if (currentUser) {
+          document.getElementById('btnLogin').style.display = 'none';
+          document.getElementById('btnLogout').style.display = 'inline-block';
+          document.getElementById('userInfoDisplay').innerText = `👤 ${currentUser.name}`;
+          document.getElementById('userInfoDisplay').style.display = 'inline-block';
+          if (dashboardLi) dashboardLi.style.display = 'block';
+          if (dashboardCard) dashboardCard.style.display = 'block';
+
+          if (currentUser.role === 'Admin') {
+              document.getElementById('adminMenuLi').style.display = 'block';
+          } else {
+              document.getElementById('adminMenuLi').style.display = 'none';
+          }
+      } else {
+          document.getElementById('btnLogin').style.display = 'inline-block';
+          document.getElementById('btnLogout').style.display = 'none';
+          document.getElementById('userInfoDisplay').style.display = 'none';
+          document.getElementById('adminMenuLi').style.display = 'none';
+          if (dashboardLi) dashboardLi.style.display = 'none';
+          if (dashboardCard) dashboardCard.style.display = 'none';
+      }
+  }
+
+  // --- 7. Admin Universal CRUD ---
+
+  function openAdminPanel() {
+      new bootstrap.Modal(document.getElementById('adminModal')).show();
+      loadSheetNames();
+      loadAdminMemoBookingOptions();
+      loadAdminEvaluationBookingOptions();
+      loadApprovalAdminOverview();
+  }
+
+  function loadSheetNames() {
+      google.script.run
+        .withSuccessHandler((names) => {
+            const sel = document.getElementById('crudSheetSelector');
+            sel.innerHTML = '<option value="" disabled selected>-- เลือกชีทที่ต้องการจัดการ --</option>';
+            names.forEach(n => {
+                sel.innerHTML += `<option value="${escapeAttr(n)}">${escapeHtml(n)}</option>`;
+            });
+        })
+        .withFailureHandler((err) => handleServerError(err))
+        .getSheetNames(getSessionToken());
+  }
+
+  function loadSheetData() {
+      const sheetName = document.getElementById('crudSheetSelector').value;
+      if (!sheetName) return;
+
+      const tbody = document.querySelector('#crudTable tbody');
+      const thead = document.querySelector('#crudTable thead');
+      tbody.innerHTML = '<tr><td class="text-center">Loading...</td></tr>';
+      thead.innerHTML = '';
+
+      google.script.run
+        .withSuccessHandler((result) => {
+            currentSheetData = result;
+            renderCrudTable(result.headers, result.data);
+        })
+        .withFailureHandler((err) => handleServerError(err))
+        .getSheetData(sheetName, getSessionToken());
+  }
+
+  function renderCrudTable(headers, data) {
+      const thead = document.querySelector('#crudTable thead');
+      const tbody = document.querySelector('#crudTable tbody');
+
+      let headHtml = '<tr><th style="width:50px;">#</th>';
+      headers.forEach(h => headHtml += `<th>${escapeHtml(h)}</th>`);
+      headHtml += '<th>Action</th></tr>';
+      thead.innerHTML = headHtml;
+
+      let bodyHtml = '';
+      data.forEach((row, idx) => {
+          bodyHtml += `<tr><td>${idx + 1}</td>`;
+          row.forEach(cell => {
+              let display = String(cell ?? '');
+              if (display.length > 50) display = display.substring(0, 50) + '...';
+              bodyHtml += `<td>${escapeHtml(display)}</td>`;
+          });
+          bodyHtml += `
+            <td>
+                <button class="btn btn-warning btn-sm" onclick="openCrudForm(${idx})"><i class="bi bi-pencil"></i></button>
+                <button class="btn btn-danger btn-sm" onclick="deleteCrudRow(${idx})"><i class="bi bi-trash"></i></button>
+            </td></tr>
+          `;
+      });
+      tbody.innerHTML = bodyHtml || '<tr><td colspan="99" class="text-center text-muted">ไม่มีข้อมูล</td></tr>';
+  }
+
+  function openCrudForm(rowIndex) {
+      const container = document.getElementById('crudFormContainer');
+      document.getElementById('crudRowIndex').value = rowIndex;
+      document.getElementById('crudFormTitle').innerText = rowIndex === -1 ? 'เพิ่มข้อมูลใหม่' : 'แก้ไขข้อมูล';
+
+      const headers = currentSheetData.headers || [];
+      const rowData = rowIndex >= 0 ? currentSheetData.data[rowIndex] : [];
+      const selectedSheet = document.getElementById('crudSheetSelector').value;
+
+      let html = '';
+      headers.forEach((h, i) => {
+          const headerName = String(h ?? '');
+          let val = rowIndex >= 0 ? (rowData[i] ?? '') : '';
+          const isPassword = selectedSheet === 'Admin' && headerName.toLowerCase() === 'password';
+          const inputType = isPassword ? 'password' : 'text';
+          const placeholder = isPassword && rowIndex >= 0 ? 'เว้นว่างไว้หากไม่ต้องการเปลี่ยนรหัสผ่าน' : '';
+          html += `
+            <div class="mb-2">
+                <label class="form-label fw-bold small">${escapeHtml(headerName)}</label>
+                <input type="${inputType}" class="form-control" name="${escapeAttr(headerName)}" value="${escapeAttr(val)}" placeholder="${escapeAttr(placeholder)}">
+            </div>
+          `;
+      });
+      container.innerHTML = html;
+      new bootstrap.Modal(document.getElementById('crudFormModal')).show();
+  }
+
+  function handleCrudSubmit(e) {
+      e.preventDefault();
+
+      const btn = document.querySelector('#crudFormModal button[type="submit"]');
+      if (btn.disabled) return;
+      const originalText = btn.innerText;
+
+      btn.disabled = true;
+      btn.innerText = 'Saving...';
+
+      const sheetName = document.getElementById('crudSheetSelector').value;
+      const rowIndex = document.getElementById('crudRowIndex').value;
+
+      const form = document.getElementById('crudDynamicForm');
+      const inputs = form.querySelectorAll('input:not([type=hidden])');
+      let rowObj = {};
+      inputs.forEach(input => {
+          rowObj[input.name] = input.value;
+      });
+
+      google.script.run
+        .withSuccessHandler(() => {
+            bootstrap.Modal.getInstance(document.getElementById('crudFormModal')).hide();
+            Swal.fire('Success', 'บันทึกข้อมูลแล้ว', 'success');
+            loadSheetData();
+            loadRooms();
+            btn.disabled = false;
+            btn.innerText = originalText;
+        })
+        .withFailureHandler((err) => {
+            handleServerError(err);
+            btn.disabled = false;
+            btn.innerText = originalText;
+        })
+        .crudSaveRow(sheetName, rowObj, rowIndex, getSessionToken());
+  }
+
+  function deleteCrudRow(rowIndex) {
+      const sheetName = document.getElementById('crudSheetSelector').value;
+      Swal.fire({
+          title: 'ยืนยันลบ?',
+          text: 'ข้อมูลจะหายไปอย่างถาวร',
+          icon: 'warning',
+          showCancelButton: true,
+          confirmButtonColor: '#d33'
+      }).then((result) => {
+          if (result.isConfirmed) {
+              google.script.run
+                .withSuccessHandler(() => {
+                    Swal.fire('Deleted', 'ลบข้อมูลแล้ว', 'success');
+                    loadSheetData();
+                    loadRooms();
+                })
+                .withFailureHandler((err) => handleServerError(err))
+                .crudDeleteRow(sheetName, rowIndex, getSessionToken());
+          }
+      });
+  }
+
+  // --- 7.1 Admin: Manual Memo PDF Generation ---
+
+  function loadAdminMemoBookingOptions() {
+      const sel = document.getElementById('memoBookingSelector');
+      const resultBox = document.getElementById('memoPdfResult');
+      if (!sel) return;
+
+      sel.innerHTML = '<option value="" selected disabled>กำลังโหลดเลขที่การจอง...</option>';
+      if (resultBox) resultBox.innerHTML = '<span class="text-muted">เลือกเลขที่การจองที่ต้องการสร้างไฟล์ PDF บันทึกข้อความใหม่</span>';
+
+      google.script.run
+        .withSuccessHandler((items) => {
+            sel.innerHTML = '<option value="" selected disabled>-- เลือกเลขที่การจอง --</option>';
+            if (!items || items.length === 0) {
+                sel.innerHTML = '<option value="" selected disabled>ไม่พบรายการจอง</option>';
+                return;
+            }
+            items.forEach(item => {
+                const statusBadge = item.status === 'Cancelled' ? ' [ยกเลิกแล้ว]' : '';
+                const warn = (!item.hasSignature && item.hasMemoPdf) ? ' [ใช้สำเนา PDF เดิม]' : (!item.hasSignature ? ' [ไม่มีลายเซ็นที่บันทึกไว้]' : '');
+                sel.innerHTML += `<option value="${escapeAttr(item.bookingId)}">${escapeHtml(item.label + statusBadge + warn)}</option>`;
+            });
+        })
+        .withFailureHandler((err) => {
+            sel.innerHTML = '<option value="" selected disabled>โหลดรายการไม่สำเร็จ</option>';
+            handleServerError(err);
+        })
+        .getBookingOptionsForMemo(getSessionToken());
+  }
+
+  function generateMemoPdfFromAdmin() {
+      const sel = document.getElementById('memoBookingSelector');
+      const resultBox = document.getElementById('memoPdfResult');
+      const btn = document.getElementById('btnGenerateMemoPdf');
+      if (!sel || !sel.value) {
+          Swal.fire('กรุณาเลือกเลขที่การจอง', 'โปรดเลือกเลขที่การจองก่อนสร้างไฟล์ PDF', 'warning');
+          return;
+      }
+
+      const bookingId = sel.value;
+      Swal.fire({
+          title: 'ยืนยันการสร้าง PDF?',
+          html: `ระบบจะสร้างไฟล์ PDF บันทึกข้อความใหม่สำหรับเลขที่การจอง<br><b>${escapeHtml(bookingId)}</b><br><span class="text-danger">ระบบจะไม่ส่งอีเมลแจ้งเตือนใด ๆ</span>`,
+          icon: 'question',
+          showCancelButton: true,
+          confirmButtonText: '<i class="bi bi-file-earmark-pdf"></i> สร้าง PDF',
+          cancelButtonText: 'ยกเลิก',
+          confirmButtonColor: '#0d6efd'
+      }).then((confirm) => {
+          if (!confirm.isConfirmed) return;
+
+          const originalText = btn ? btn.innerHTML : '';
+          if (btn) {
+              btn.disabled = true;
+              btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> กำลังสร้าง PDF...';
+          }
+          if (resultBox) {
+              resultBox.innerHTML = '<span class="text-primary"><span class="spinner-border spinner-border-sm"></span> กำลังสร้างไฟล์ PDF โปรดรอสักครู่...</span>';
+          }
+
+          google.script.run
+            .withSuccessHandler((res) => {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = originalText;
+                }
+                const methodText = res.method === 'COPY_EXISTING_PDF'
+                  ? 'สร้างโดยทำสำเนาจาก PDF เดิม เนื่องจากรายการนี้ยังไม่มีไฟล์ลายเซ็นที่ระบบจัดเก็บไว้'
+                  : 'สร้างใหม่จาก Template และข้อมูลการจองในฐานข้อมูล';
+                if (resultBox) {
+                    resultBox.innerHTML = `
+                      <div class="alert alert-success mb-0">
+                        <div class="fw-bold"><i class="bi bi-check-circle"></i> สร้างไฟล์ PDF สำเร็จ</div>
+                        <div class="small mt-1">${escapeHtml(methodText)}</div>
+                        <a class="btn btn-sm btn-outline-primary mt-2" href="${escapeAttr(res.memoPdfUrl)}" target="_blank" rel="noopener">
+                          <i class="bi bi-box-arrow-up-right"></i> เปิดไฟล์ PDF
+                        </a>
+                      </div>
+                    `;
+                }
+                Swal.fire({
+                    title: 'สร้าง PDF สำเร็จ',
+                    html: `${escapeHtml(res.message || 'สร้างไฟล์ PDF บันทึกข้อความใหม่แล้ว')}<br><a href="${escapeAttr(res.memoPdfUrl)}" target="_blank" rel="noopener">เปิดไฟล์ PDF</a>`,
+                    icon: 'success'
+                });
+                loadSheetData();
+                loadAdminMemoBookingOptions();
+            })
+            .withFailureHandler((err) => {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = originalText;
+                }
+                if (resultBox) {
+                    resultBox.innerHTML = `<div class="alert alert-danger mb-0"><i class="bi bi-exclamation-triangle"></i> ${escapeHtml(err.message || err)}</div>`;
+                }
+                handleServerError(err);
+            })
+            .adminGenerateMemoPdf(bookingId, getSessionToken());
+      });
+  }
+
+
+
+  // --- 7.2 Admin: Resend Evaluation Link ---
+
+  let adminEvaluationOptions = [];
+
+  function loadAdminEvaluationBookingOptions() {
+      const sel = document.getElementById('evalResendBookingSelector');
+      const resultBox = document.getElementById('evalResendResult');
+      if (!sel) return;
+
+      adminEvaluationOptions = [];
+      sel.innerHTML = '<option value="" selected disabled>กำลังโหลดเลขที่การจอง...</option>';
+      if (resultBox) resultBox.innerHTML = '<span class="text-muted">เลือกเลขที่การจองที่ต้องการส่งลิงก์แบบประเมินใหม่</span>';
+
+      google.script.run
+        .withSuccessHandler((items) => {
+            const availableItems = (items || []).filter(item => item && item.canSend === true);
+            adminEvaluationOptions = availableItems;
+            sel.innerHTML = '<option value="" selected disabled>-- เลือกเลขที่การจอง --</option>';
+            if (availableItems.length === 0) {
+                sel.innerHTML = '<option value="" selected disabled>ไม่มีรายการที่พร้อมส่งแบบประเมินในขณะนี้</option>';
+                if (resultBox) {
+                    resultBox.innerHTML = '<span class="text-muted">ระบบจะแสดงเฉพาะรายการที่สิ้นสุดการประชุมแล้วและยังไม่เกิน 5 วัน</span>';
+                }
+                return;
+            }
+            availableItems.forEach(item => {
+                const badge = item.canSend ? ' [พร้อมส่ง]' : ` [${item.statusLabel || 'ยังส่งไม่ได้'}]`;
+                const disabled = item.canSend ? '' : ' disabled';
+                sel.innerHTML += `<option value="${escapeAttr(item.bookingId)}"${disabled}>${escapeHtml(item.label + badge)}</option>`;
+            });
+        })
+        .withFailureHandler((err) => {
+            sel.innerHTML = '<option value="" selected disabled>โหลดรายการไม่สำเร็จ</option>';
+            handleServerError(err);
+        })
+        .getBookingOptionsForEvaluationResend(getSessionToken());
+  }
+
+  function getSelectedEvaluationOption_() {
+      const sel = document.getElementById('evalResendBookingSelector');
+      if (!sel || !sel.value) return null;
+      return (adminEvaluationOptions || []).find(item => item.bookingId === sel.value) || null;
+  }
+
+  function updateEvaluationResendPreview() {
+      const resultBox = document.getElementById('evalResendResult');
+      const item = getSelectedEvaluationOption_();
+      if (!resultBox || !item) return;
+
+      const statusClass = item.canSend ? 'success' : 'warning';
+      resultBox.innerHTML = `
+        <div class="alert alert-${statusClass} mb-0">
+          <div class="fw-bold"><i class="bi bi-info-circle"></i> ${escapeHtml(item.statusLabel || '')}</div>
+          <div class="small mt-1"><b>หัวข้อ:</b> ${escapeHtml(item.topic || '-')}</div>
+          <div class="small"><b>ห้อง:</b> ${escapeHtml(item.roomName || '-')}</div>
+          <div class="small"><b>ผู้จอง:</b> ${escapeHtml(item.requester || '-')}</div>
+          <div class="small"><b>อีเมล:</b> ${escapeHtml(item.requesterEmail || '-')}</div>
+          <div class="small"><b>สิ้นสุดประชุม:</b> ${escapeHtml(item.endStr || '-')}</div>
+          <div class="small mt-1 text-muted">${escapeHtml(item.reason || '')}</div>
+          <a class="btn btn-sm btn-outline-secondary mt-2" href="${escapeAttr(item.evaluationUrl || '#')}" target="_blank" rel="noopener">
+            <i class="bi bi-box-arrow-up-right"></i> เปิดลิงก์แบบประเมิน
+          </a>
+        </div>
+      `;
+  }
+
+  function resendEvaluationLinkFromAdmin() {
+      const sel = document.getElementById('evalResendBookingSelector');
+      const resultBox = document.getElementById('evalResendResult');
+      const btn = document.getElementById('btnResendEvaluationLink');
+      const item = getSelectedEvaluationOption_();
+
+      if (!sel || !sel.value || !item) {
+          Swal.fire('กรุณาเลือกเลขที่การจอง', 'โปรดเลือกเลขที่การจองก่อนส่งลิงก์แบบประเมินใหม่', 'warning');
+          return;
+      }
+      if (!item.canSend) {
+          Swal.fire('ยังไม่สามารถส่งได้', item.reason || 'รายการนี้ยังไม่เข้าเงื่อนไขส่งแบบประเมิน', 'warning');
+          return;
+      }
+
+      Swal.fire({
+          title: 'ยืนยันส่งลิงก์แบบประเมินใหม่?',
+          html: `
+            <div class="text-start">
+              <div><b>เลขที่การจอง:</b> ${escapeHtml(item.bookingId)}</div>
+              <div><b>ผู้จอง:</b> ${escapeHtml(item.requester || '-')}</div>
+              <div><b>อีเมล:</b> ${escapeHtml(item.requesterEmail || '-')}</div>
+              <div class="mt-2 text-danger">ระบบจะส่งอีเมลเฉพาะผู้จองรายนี้เท่านั้น ไม่ส่ง Officers ไม่ส่ง Admin และไม่สร้าง PDF ใหม่</div>
+            </div>
+          `,
+          icon: 'question',
+          showCancelButton: true,
+          confirmButtonText: '<i class="bi bi-envelope-arrow-up"></i> ส่งลิงก์ใหม่',
+          cancelButtonText: 'ยกเลิก',
+          confirmButtonColor: '#6f42c1'
+      }).then((confirm) => {
+          if (!confirm.isConfirmed) return;
+
+          const originalText = btn ? btn.innerHTML : '';
+          if (btn) {
+              btn.disabled = true;
+              btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> กำลังส่ง...';
+          }
+          if (resultBox) {
+              resultBox.innerHTML = '<span class="text-primary"><span class="spinner-border spinner-border-sm"></span> กำลังส่งลิงก์แบบประเมินใหม่...</span>';
+          }
+
+          google.script.run
+            .withSuccessHandler((res) => {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = originalText;
+                }
+                if (resultBox) {
+                    resultBox.innerHTML = `
+                      <div class="alert alert-success mb-0">
+                        <div class="fw-bold"><i class="bi bi-check-circle"></i> ส่งลิงก์แบบประเมินใหม่สำเร็จ</div>
+                        <div class="small mt-1">ส่งไปยัง: ${escapeHtml(res.email || '')}</div>
+                        <a class="btn btn-sm btn-outline-primary mt-2" href="${escapeAttr(res.evaluationUrl || '#')}" target="_blank" rel="noopener">
+                          <i class="bi bi-box-arrow-up-right"></i> เปิดลิงก์แบบประเมิน
+                        </a>
+                      </div>
+                    `;
+                }
+                Swal.fire({
+                    title: 'ส่งลิงก์ใหม่สำเร็จ',
+                    html: `${escapeHtml(res.message || 'ส่งอีเมลแบบประเมินใหม่แล้ว')}<br>ผู้รับ: <b>${escapeHtml(res.email || '')}</b>`,
+                    icon: 'success'
+                });
+                loadAdminEvaluationBookingOptions();
+                loadSheetData();
+            })
+            .withFailureHandler((err) => {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = originalText;
+                }
+                if (resultBox) {
+                    resultBox.innerHTML = `<div class="alert alert-danger mb-0"><i class="bi bi-exclamation-triangle"></i> ${escapeHtml(err.message || err)}</div>`;
+                }
+                handleServerError(err);
+            })
+            .resendEvaluationEmailForBooking(item.bookingId, getSessionToken());
+      });
+  }
+
+
+  // --- 8. Staff Dashboard ---
+  function loadDashboardData(showAlert = true) {
+      if (!currentUser) return;
+      const card = document.getElementById('dashboardCard');
+      const body = document.getElementById('dashboardBody');
+      if (card) card.style.display = 'block';
+      if (body) body.innerHTML = '<div class="text-muted small">กำลังโหลดข้อมูลภาพรวม...</div>';
+
+      google.script.run
+        .withSuccessHandler((data) => {
+          renderDashboardData(data);
+          if (showAlert) Swal.fire('อัปเดตข้อมูลแล้ว', 'โหลดภาพรวมระบบล่าสุดเรียบร้อย', 'success');
+        })
+        .withFailureHandler((err) => handleServerError(err))
+        .getDashboardData(getSessionToken());
+  }
+
+  function renderDashboardData(data) {
+      const body = document.getElementById('dashboardBody');
+      if (!body) return;
+      const rooms = (data.usageByRoom || []).map(room => `
+        <div class="d-flex justify-content-between border-bottom py-1 small">
+          <span>${escapeHtml(room.roomName)}</span>
+          <span class="fw-bold">${escapeHtml(room.count)} ครั้ง / ${escapeHtml(room.hours)} ชม.</span>
+        </div>
+      `).join('');
+      const next = (data.nextBookings || []).map(item => `
+        <div class="border rounded p-2 mb-2 small bg-light">
+          <div class="fw-bold text-primary">${escapeHtml(item.topic)}</div>
+          <div>${escapeHtml(item.roomName)} | ${escapeHtml(item.start)}</div>
+          <div class="text-muted">ผู้จอง: ${escapeHtml(item.requester)}</div>
+        </div>
+      `).join('') || '<div class="text-muted small">ยังไม่มีรายการจองล่วงหน้า</div>';
+
+      body.innerHTML = `
+        <div class="row g-2 mb-2">
+          <div class="col-6"><div class="dashboard-mini bg-primary-subtle"><b>${escapeHtml(data.todayBookings)}</b><span>วันนี้</span></div></div>
+          <div class="col-6"><div class="dashboard-mini bg-success-subtle"><b>${escapeHtml(data.upcomingBookings)}</b><span>กำลังจะมาถึง</span></div></div>
+          <div class="col-6"><div class="dashboard-mini bg-warning-subtle"><b>${escapeHtml(data.waitingEvaluation)}</b><span>รอส่งประเมิน</span></div></div>
+          <div class="col-6"><div class="dashboard-mini bg-danger-subtle"><b>${escapeHtml(data.cancelledBookings)}</b><span>ยกเลิกทั้งหมด</span></div></div>
+        </div>
+        <div class="small text-muted mb-2">คะแนนประเมินเฉลี่ย: <b>${escapeHtml(data.averageEvaluationScore)}</b> / 50</div>
+        <h6 class="fw-bold mt-3 mb-2"><i class="bi bi-bar-chart"></i> สถิติการใช้ห้อง</h6>
+        ${rooms || '<div class="text-muted small">ยังไม่มีข้อมูลการใช้ห้อง</div>'}
+        <h6 class="fw-bold mt-3 mb-2"><i class="bi bi-clock-history"></i> รายการใกล้ถึง</h6>
+        ${next}
+        <div class="text-end text-muted mt-2" style="font-size: 0.75rem;">อัปเดต: ${escapeHtml(data.generatedAt)}</div>
+      `;
+  }
+
+
+
+  // --- 9. Admin Approval Workflow Tools ---
+  function loadApprovalAdminOverview() {
+      const tbody = document.querySelector('#approvalAdminTable tbody');
+      if (!tbody) return;
+      tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">กำลังโหลด...</td></tr>';
+      google.script.run
+        .withSuccessHandler((rows) => {
+            if (!rows || rows.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">ยังไม่มีรายการ Approval Workflow</td></tr>';
+                return;
+            }
+            tbody.innerHTML = rows.map(r => `
+              <tr>
+                <td class="small">${escapeHtml(r.approvalId)}</td>
+                <td class="small">${escapeHtml(r.bookingId)}</td>
+                <td class="small">${escapeHtml(r.topic)}<br><span class="text-muted">${escapeHtml(r.roomName)} / ${escapeHtml(r.requester)}</span></td>
+                <td><span class="badge bg-${r.status === 'COMPLETED' ? 'success' : (r.status === 'REJECTED' || r.status === 'CANCELLED' ? 'danger' : 'warning text-dark')}">${escapeHtml(r.status)}</span></td>
+                <td class="small">${escapeHtml(r.currentStep)}: ${escapeHtml(r.currentApproverRole)}<br><span class="text-muted">${escapeHtml(r.currentApproverEmail || '')}</span></td>
+                <td class="text-nowrap">
+                  ${r.finalSignedPdfUrl ? `<a class="btn btn-success btn-sm" href="${escapeAttr(r.finalSignedPdfUrl)}" target="_blank"><i class="bi bi-file-earmark-check"></i></a>` : ''}
+                  <button class="btn btn-outline-primary btn-sm" onclick="resendApprovalLink('${escapeAttr(r.approvalId)}')"><i class="bi bi-envelope-arrow-up"></i></button>
+                </td>
+              </tr>
+            `).join('');
+        })
+        .withFailureHandler((err) => {
+            tbody.innerHTML = `<tr><td colspan="6" class="text-danger text-center">${escapeHtml(err.message)}</td></tr>`;
+        })
+        .getApprovalAdminOverview(getSessionToken());
+  }
+
+  function resendApprovalLink(approvalId) {
+      Swal.fire({
+          title: 'ส่งลิงก์ลงนามซ้ำ?',
+          text: approvalId,
+          icon: 'question',
+          showCancelButton: true,
+          confirmButtonText: 'ส่งลิงก์'
+      }).then((result) => {
+          if (!result.isConfirmed) return;
+          Swal.fire({title:'กำลังส่ง...', allowOutsideClick:false, didOpen:()=>Swal.showLoading()});
+          google.script.run
+            .withSuccessHandler((msg) => {
+                Swal.fire('สำเร็จ', msg, 'success');
+                loadApprovalAdminOverview();
+            })
+            .withFailureHandler((err) => Swal.fire('เกิดข้อผิดพลาด', err.message, 'error'))
+            .resendCurrentApprovalLinkByAdmin(approvalId, getSessionToken());
+      });
+  }
+
+  function createApprovalFlowForSelectedMemoBooking() {
+      const sel = document.getElementById('memoBookingSelector');
+      const bookingId = sel ? sel.value : '';
+      if (!bookingId) {
+          Swal.fire('ยังไม่ได้เลือกเลขที่การจอง', 'กรุณาเลือกเลขที่การจองจากช่องสร้าง PDF ด้านบนก่อน', 'warning');
+          return;
+      }
+      Swal.fire({
+          title: 'เริ่ม/Reset กระบวนการลงนาม?',
+          html: `ระบบจะสร้าง Workflow ใหม่สำหรับเลขที่การจอง <b>${escapeHtml(bookingId)}</b> และส่งอีเมลไปยังผู้ลงนามขั้นตอนแรก`,
+          icon: 'warning',
+          showCancelButton: true,
+          confirmButtonText: 'ยืนยัน'
+      }).then((result) => {
+          if (!result.isConfirmed) return;
+          Swal.fire({title:'กำลังสร้าง Workflow...', allowOutsideClick:false, didOpen:()=>Swal.showLoading()});
+          google.script.run
+            .withSuccessHandler((res) => {
+                Swal.fire('สำเร็จ', `สร้าง Workflow แล้ว: ${escapeHtml(res.approvalId || '')}`, 'success');
+                loadApprovalAdminOverview();
+            })
+            .withFailureHandler((err) => Swal.fire('เกิดข้อผิดพลาด', err.message, 'error'))
+            .adminCreateApprovalFlowForBooking(bookingId, getSessionToken());
+      });
+  }
+
+</script>

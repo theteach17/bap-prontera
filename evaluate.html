@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css">
+    
+    <style>
+      body {
+        font-family: 'Prompt', sans-serif;
+        background-color: #f0f2f5;
+        padding-bottom: 50px;
+      }
+      .header-cover {
+        background: linear-gradient(135deg, #6610f2 0%, #6f42c1 100%);
+        color: white;
+        padding: 40px 20px;
+        text-align: center;
+        border-radius: 0 0 25px 25px;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+      }
+      .card-form {
+        max-width: 800px;
+        margin: -30px auto 0;
+        border: none;
+        border-radius: 15px;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.05);
+        overflow: hidden;
+      }
+      .question-row {
+        padding: 15px 0;
+        border-bottom: 1px solid #f8f9fa;
+      }
+      .question-row:last-child {
+        border-bottom: none;
+      }
+      .rating-options {
+        display: flex;
+        justify-content: space-between;
+        max-width: 300px;
+        margin-top: 10px;
+      }
+      .form-check-input:checked {
+        background-color: #ffc107;
+        border-color: #ffc107;
+      }
+      .eval-badge {
+        background-color: #e9ecef;
+        color: #495057;
+        padding: 5px 15px;
+        border-radius: 20px;
+        font-size: 0.9em;
+        display: inline-block;
+        margin-top: 10px;
+      }
+    </style>
+  </head>
+  <body>
+
+    <div class="header-cover">
+      <h1><i class="bi bi-clipboard-check"></i> แบบประเมินความพึงพอใจ</h1>
+      <p>ระบบจองห้องประชุม (Meeting Room Booking System)</p>
+    </div>
+
+    <div class="container">
+      <div id="loading" class="text-center mt-5">
+        <div class="spinner-border text-primary" role="status"></div>
+        <p class="mt-2 text-muted">กำลังโหลดข้อมูล...</p>
+      </div>
+
+      <div id="expiredMessage" class="card card-form p-5 text-center" style="display:none;">
+        <div class="text-danger mb-3"><i class="bi bi-exclamation-circle" style="font-size: 3rem;"></i></div>
+        <h3>ขออภัย แบบประเมินนี้หมดอายุแล้ว</h3>
+        <p class="text-muted">ลิงก์ประเมินมีอายุการใช้งาน 5 วันหลังจากสิ้นสุดการประชุม</p>
+      </div>
+
+      <div id="mainForm" class="card card-form" style="display:none;">
+        <div class="card-body p-4 p-md-5">
+          
+          <div class="alert alert-light border text-center mb-4">
+            <h5 class="fw-bold text-primary" id="dispTopic"></h5>
+            <p class="mb-1"><i class="bi bi-geo-alt"></i> <span id="dispRoom"></span> | <i class="bi bi-calendar"></i> <span id="dispDate"></span></p>
+            <p class="mb-0"><small>ผู้จอง: <span id="dispRequester"></span></small></p>
+            <div class="eval-badge mt-2">
+              <i class="bi bi-people"></i> มีผู้ร่วมประเมินแล้ว: <span id="dispCount" class="fw-bold">0</span> คน
+            </div>
+          </div>
+
+          <form id="evalForm" onsubmit="submitForm(event)">
+            <input type="hidden" id="bookingId" name="bookingId">
+            <input type="hidden" id="roomName" name="roomName">
+
+            <div class="mb-4">
+              <label class="form-label fw-bold">ชื่อผู้ประเมิน (Optional)</label>
+              <input type="text" class="form-control" name="raterName" placeholder="ระบุชื่อ หรือเว้นว่างหากไม่ต้องการเปิดเผย">
+            </div>
+
+            <h5 class="fw-bold border-bottom pb-2 mb-3"><i class="bi bi-star"></i> ส่วนที่ 1: ความพึงพอใจ</h5>
+            <p class="small text-muted mb-4">ระดับคะแนน: 5=มากที่สุด, 4=มาก, 3=ปานกลาง, 2=น้อย, 1=น้อยที่สุด</p>
+
+            <div id="questionsContainer"></div>
+
+            <h5 class="fw-bold border-bottom pb-2 mb-3 mt-4"><i class="bi bi-chat-text"></i> ส่วนที่ 2: ข้อเสนอแนะ</h5>
+            <div class="mb-3">
+              <textarea class="form-control" name="suggestion" rows="3" placeholder="ข้อคิดเห็นเพิ่มเติมเพื่อการปรับปรุง..."></textarea>
+            </div>
+
+            <div class="d-grid mt-4">
+              <button type="submit" id="btnSubmit" class="btn btn-primary btn-lg rounded-pill shadow-sm">ส่งแบบประเมิน</button>
+            </div>
+          </form>
+
+        </div>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <script>
+      // รับ Booking ID จาก Server Side (ผ่าน Template)
+      const bid = "<?= bookingId ?>"; 
+      
+      const questions = [
+        "1. ท่านมีความพึงพอใจต่อความสะอาดและความเป็นระเบียบเรียบร้อยของห้องประชุม/สถานที่ในระดับใด",
+        "2. ท่านมีความพึงพอใจต่อความเพียงพอและความสะดวกสบายของที่นั่งในห้องประชุม/สถานที่เพียงใด",
+        "3. ท่านมีความพึงพอใจต่อระบบเครื่องเสียงและไมโครโฟนที่ใช้ในห้องประชุม/สถานที่มากน้อยเพียงใด",
+        "4. ท่านมีความพึงพอใจต่ออุปกรณ์นำเสนอ (เช่น โปรเจคเตอร์ จอภาพ) และความพร้อมใช้งานเพียงใด",
+        "5. ท่านมีความพึงพอใจต่อระบบแสงสว่างและอุณหภูมิภายในห้องประชุม/สถานที่ ในระดับใด",
+        "6. ท่านมีความพึงพอใจต่อสัญญาณอินเทอร์เน็ต (Wi-Fi) และความเสถียรของการเชื่อมต่อเพียงใด",
+        "7. ท่านมีความพึงพอใจต่อขนาดและความเหมาะสมของห้องประชุม/สถานที่ กับจำนวนผู้เข้าร่วมประชุมมากน้อยเพียงใด",
+        "8. ท่านมีความพึงพอใจต่อการบริการและความช่วยเหลือจากเจ้าหน้าที่ผู้ดูแลห้องประชุม/สถานที่ในระดับใด",
+        "9. ท่านมีความพึงพอใจต่อความสะดวกในการจองและขั้นตอนการใช้งานห้องประชุม/สถานที่เพียงใด",
+        "10. โดยภาพรวมแล้ว ท่านมีความพึงพอใจต่อการใช้งานห้องประชุม/สถานที่ ในระดับใด"
+      ];
+
+      document.addEventListener('DOMContentLoaded', function() {
+        if(!bid) {
+           showError('ไม่พบรหัสการจอง (Booking ID)');
+           return;
+        }
+        loadData();
+        renderQuestions();
+      });
+
+      function renderQuestions() {
+        let html = '';
+        questions.forEach((q, index) => {
+           let qKey = 'q' + (index + 1);
+           html += `
+             <div class="question-row">
+               <label class="fw-bold mb-2">${q}</label>
+               <div class="d-flex justify-content-between px-2 px-md-4">
+                 <div class="form-check">
+                   <input class="form-check-input" type="radio" name="${qKey}" value="5" id="${qKey}_5" required>
+                   <label class="form-check-label" for="${qKey}_5">5</label>
+                 </div>
+                 <div class="form-check">
+                   <input class="form-check-input" type="radio" name="${qKey}" value="4" id="${qKey}_4">
+                   <label class="form-check-label" for="${qKey}_4">4</label>
+                 </div>
+                 <div class="form-check">
+                   <input class="form-check-input" type="radio" name="${qKey}" value="3" id="${qKey}_3">
+                   <label class="form-check-label" for="${qKey}_3">3</label>
+                 </div>
+                 <div class="form-check">
+                   <input class="form-check-input" type="radio" name="${qKey}" value="2" id="${qKey}_2">
+                   <label class="form-check-label" for="${qKey}_2">2</label>
+                 </div>
+                 <div class="form-check">
+                   <input class="form-check-input" type="radio" name="${qKey}" value="1" id="${qKey}_1">
+                   <label class="form-check-label" for="${qKey}_1">1</label>
+                 </div>
+               </div>
+             </div>
+           `;
+        });
+        document.getElementById('questionsContainer').innerHTML = html;
+      }
+
+      function loadData() {
+        google.script.run.withSuccessHandler(function(data) {
+           document.getElementById('loading').style.display = 'none';
+
+           if(data.error) {
+             const box = document.getElementById('expiredMessage');
+             box.style.display = 'block';
+             const title = box.querySelector('h3');
+             const msg = box.querySelector('p');
+             if (title) title.innerText = data.error === 'NOT_READY' ? 'ยังไม่เปิดให้ประเมิน' : (data.error === 'CANCELLED' ? 'รายการจองถูกยกเลิกแล้ว' : 'ขออภัย แบบประเมินนี้ไม่สามารถใช้งานได้');
+             if (msg) msg.innerText = data.message || 'กรุณาติดต่อเจ้าหน้าที่ผู้ดูแลระบบ';
+           } else {
+             document.getElementById('mainForm').style.display = 'block';
+             document.getElementById('dispTopic').innerText = data.topic;
+             document.getElementById('dispRoom').innerText = data.roomName;
+             document.getElementById('dispRequester').innerText = data.requester;
+             document.getElementById('dispDate').innerText = data.dateStr;
+             document.getElementById('dispCount').innerText = data.evalCount;
+             document.getElementById('bookingId').value = data.bookingId;
+             document.getElementById('roomName').value = data.roomName;
+           }
+        }).withFailureHandler(function(err){
+           showError(err.message);
+        }).getBookingDetailsForEval(bid);
+      }
+
+      function submitForm(e) {
+        e.preventDefault();
+        const btn = document.getElementById('btnSubmit');
+        btn.disabled = true;
+        btn.innerText = 'กำลังส่ง...';
+
+        const form = document.getElementById('evalForm');
+        const formData = {};
+        new FormData(form).forEach((value, key) => formData[key] = value);
+
+        google.script.run.withSuccessHandler(function(res) {
+           Swal.fire({
+             title: 'ขอบคุณครับ',
+             text: 'ระบบได้รับผลการประเมินเรียบร้อยแล้ว',
+             icon: 'success',
+             confirmButtonText: 'ปิดหน้าต่าง'
+           }).then(() => {
+             window.close(); // พยายามปิดหน้าต่าง (บาง Browser อาจบล็อก)
+             document.getElementById('mainForm').innerHTML = '<div class="text-center p-5"><h3>✅ บันทึกข้อมูลเรียบร้อย</h3><p>ขอบคุณที่ใช้บริการครับ</p></div>';
+           });
+        }).withFailureHandler(function(err) {
+           Swal.fire('Error', err.message, 'error');
+           btn.disabled = false;
+           btn.innerText = 'ส่งแบบประเมิน';
+        }).submitEvaluation(formData);
+      }
+
+      function showError(msg) {
+        document.getElementById('loading').innerHTML = `<div class="text-danger">❌ Error: ${msg}</div>`;
+      }
+    </script>
+  </body>
+</html>

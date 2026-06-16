@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css">
+  <style>
+    body{font-family:'Prompt',sans-serif;background:#f4f7fb;padding-bottom:40px}.hero{background:linear-gradient(135deg,#0d6efd,#6610f2);color:white;padding:28px 16px;text-align:center;border-radius:0 0 26px 26px}.main-card{max-width:900px;margin:-20px auto 0;border:0;border-radius:18px;box-shadow:0 14px 40px rgba(20,30,70,.12)}#sigCanvas{width:100%;height:190px;border:1px solid #ced4da;border-radius:12px;background:white;touch-action:none;cursor:crosshair}.step-pill{display:inline-block;padding:4px 10px;border-radius:999px;background:#eef2ff;margin:3px;font-size:.84rem}.signature-preview{max-height:150px;border:1px solid #dee2e6;border-radius:10px;padding:6px;background:#fff}
+  </style>
+</head>
+<body>
+  <div class="hero">
+    <h3 class="fw-bold mb-1"><i class="bi bi-pen"></i> ลงนามอนุมัติเอกสารขอใช้ห้องประชุม</h3>
+    <div class="small opacity-75">Meeting Room Booking System</div>
+  </div>
+  <div class="container">
+    <div id="loading" class="text-center mt-5"><div class="spinner-border text-primary"></div><p class="mt-2 text-muted">กำลังโหลดข้อมูล...</p></div>
+    <div id="errorBox" class="card main-card p-5 text-center" style="display:none;"><i class="bi bi-exclamation-triangle text-danger" style="font-size:3rem"></i><h4 class="mt-3">ไม่สามารถดำเนินการได้</h4><p id="errorText" class="text-muted"></p></div>
+    <div id="mainBox" class="card main-card" style="display:none;">
+      <div class="card-body p-4 p-md-5">
+        <div class="alert alert-light border mb-4">
+          <div class="d-flex justify-content-between flex-wrap gap-2">
+            <div><div class="small text-muted">ขั้นตอนที่ <span id="stepNo"></span></div><h4 id="stepName" class="fw-bold text-primary mb-1"></h4></div>
+            <a id="memoLink" href="#" target="_blank" class="btn btn-outline-primary btn-sm align-self-start"><i class="bi bi-file-earmark-pdf"></i> เปิดเอกสารคำขอ</a>
+          </div>
+          <hr>
+          <h5 id="topic" class="fw-bold"></h5>
+          <div class="row small text-muted mt-2">
+            <div class="col-md-6">รหัสการจอง: <span id="bookingId"></span></div>
+            <div class="col-md-6">ห้อง: <span id="roomName"></span></div>
+            <div class="col-md-6">ผู้จอง: <span id="requester"></span></div>
+            <div class="col-md-6">จำนวน: <span id="headcount"></span> คน</div>
+            <div class="col-md-6">เริ่ม: <span id="startStr"></span></div>
+            <div class="col-md-6">สิ้นสุด: <span id="endStr"></span></div>
+          </div>
+        </div>
+        <div class="mb-4"><h6 class="fw-bold">สถานะการลงนาม</h6><div id="stepStatus"></div></div>
+        <form id="approvalForm" onsubmit="submitApproval(event)">
+          <input type="hidden" id="token" value="<?= token ?>">
+          <div class="row">
+            <div class="col-md-6 mb-3"><label class="form-label fw-bold">ชื่อผู้ลงนาม</label><input type="text" id="signerName" class="form-control" required></div>
+            <div class="col-md-6 mb-3"><label class="form-label fw-bold">อีเมลผู้ลงนาม</label><input type="email" id="signerEmail" class="form-control" required></div>
+          </div>
+          <div class="mb-3"><label class="form-label fw-bold">ความเห็น/หมายเหตุ</label><textarea id="comment" class="form-control" rows="2" placeholder="ระบุความเห็นเพิ่มเติม หากมี"></textarea></div>
+          <div class="card border-info mb-3"><div class="card-header bg-info bg-opacity-10 fw-bold"><i class="bi bi-vector-pen"></i> ลงลายมือชื่อออนไลน์</div><div class="card-body"><canvas id="sigCanvas" width="700" height="190"></canvas><div class="d-flex gap-2 mt-2"><button type="button" class="btn btn-outline-danger btn-sm" onclick="clearSignature()"><i class="bi bi-eraser"></i> ล้างลายเซ็น</button></div></div></div>
+          <div class="mb-4"><label class="form-label fw-bold">หรือแนบรูปลายเซ็น PNG/JPG</label><input type="file" id="signatureFile" class="form-control" accept="image/png,image/jpeg" onchange="previewSignatureFile()"><div class="form-text">หากแนบรูป ระบบจะใช้รูปนี้แทนลายเซ็นที่วาดบนหน้าจอ ขนาดไม่เกิน 1MB</div><div id="signatureFilePreview" class="mt-2"></div></div>
+          <div class="d-grid gap-2 d-md-flex justify-content-md-end">
+            <button type="button" class="btn btn-outline-danger" onclick="rejectApproval()"><i class="bi bi-x-circle"></i> ไม่อนุมัติ/ส่งกลับแก้ไข</button>
+            <button type="submit" id="btnApprove" class="btn btn-success btn-lg"><i class="bi bi-check-circle"></i> อนุมัติและลงนาม</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+  <script>
+    const approvalToken = "<?= token ?>";
+    let fileSignatureBase64 = '';
+    let isDrawing = false;
+    document.addEventListener('DOMContentLoaded', () => { initCanvas(); loadApprovalDetails(); });
+    function escapeHtml(v){return String(v??'').replace(/[&<>'"]/g,s=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[s]));}
+    function loadApprovalDetails(){ if(!approvalToken){showError('ไม่พบ token สำหรับลงนาม');return;} google.script.run.withSuccessHandler(d=>{document.getElementById('loading').style.display='none'; if(!d.available){showError(d.message);return;} document.getElementById('mainBox').style.display='block'; document.getElementById('stepNo').innerText=d.stepNo; document.getElementById('stepName').innerText=d.stepName; document.getElementById('topic').innerText=d.topic; document.getElementById('bookingId').innerText=d.bookingId; document.getElementById('roomName').innerText=d.roomName; document.getElementById('requester').innerText=d.requester; document.getElementById('headcount').innerText=d.headcount; document.getElementById('startStr').innerText=d.startStr; document.getElementById('endStr').innerText=d.endStr; document.getElementById('signerName').value=d.approverName||''; document.getElementById('signerEmail').value=(d.approverEmail||'').split(',')[0]||''; if(d.initialMemoPdfUrl){document.getElementById('memoLink').href=d.initialMemoPdfUrl;} document.getElementById('stepStatus').innerHTML=(d.steps||[]).map(s=>`<span class="step-pill">${s.stepNo}. ${escapeHtml(s.stepName)}: <b>${escapeHtml(s.status)}</b></span>`).join(''); }).withFailureHandler(e=>showError(e.message)).getApprovalDetailsByToken(approvalToken);}
+    function showError(msg){document.getElementById('loading').style.display='none';document.getElementById('mainBox').style.display='none';document.getElementById('errorBox').style.display='block';document.getElementById('errorText').innerText=msg||'เกิดข้อผิดพลาด';}
+    function initCanvas(){const c=document.getElementById('sigCanvas');const ctx=c.getContext('2d');function pos(e){const r=c.getBoundingClientRect();const x=(e.clientX||(e.touches&&e.touches[0].clientX))-r.left;const y=(e.clientY||(e.touches&&e.touches[0].clientY))-r.top;return {x:x*c.width/r.width,y:y*c.height/r.height};}function start(e){isDrawing=true;const p=pos(e);ctx.beginPath();ctx.moveTo(p.x,p.y);e.preventDefault();}function draw(e){if(!isDrawing)return;const p=pos(e);ctx.lineWidth=3;ctx.lineCap='round';ctx.strokeStyle='#0b2e59';ctx.lineTo(p.x,p.y);ctx.stroke();e.preventDefault();}function end(){isDrawing=false;}c.addEventListener('mousedown',start);c.addEventListener('mousemove',draw);c.addEventListener('mouseup',end);c.addEventListener('mouseleave',end);c.addEventListener('touchstart',start,{passive:false});c.addEventListener('touchmove',draw,{passive:false});c.addEventListener('touchend',end);} 
+    function clearSignature(){const c=document.getElementById('sigCanvas');c.getContext('2d').clearRect(0,0,c.width,c.height);fileSignatureBase64='';document.getElementById('signatureFile').value='';document.getElementById('signatureFilePreview').innerHTML='';}
+    function canvasIsBlank(){const c=document.getElementById('sigCanvas');const blank=document.createElement('canvas');blank.width=c.width;blank.height=c.height;return c.toDataURL()===blank.toDataURL();}
+    function previewSignatureFile(){const f=document.getElementById('signatureFile').files[0]; if(!f)return; if(f.size>1024*1024){Swal.fire('ไฟล์ใหญ่เกินไป','กรุณาใช้ไฟล์ไม่เกิน 1MB','error');document.getElementById('signatureFile').value='';return;} const r=new FileReader();r.onload=()=>{fileSignatureBase64=r.result;document.getElementById('signatureFilePreview').innerHTML=`<img src="${fileSignatureBase64}" class="signature-preview">`;};r.readAsDataURL(f);}
+    function buildPayload(action){let sig=fileSignatureBase64;let method=fileSignatureBase64?'upload':'draw'; if(!sig){if(canvasIsBlank()) sig=''; else sig=document.getElementById('sigCanvas').toDataURL('image/png');} return {token:approvalToken,action:action,signerName:document.getElementById('signerName').value,signerEmail:document.getElementById('signerEmail').value,comment:document.getElementById('comment').value,signatureBase64:sig,signatureMethod:method,signatureFileName:(document.getElementById('signatureFile').files[0]||{}).name||'signature.png'};}
+    function submitApproval(e){e.preventDefault();const payload=buildPayload('approve'); if(!payload.signatureBase64){Swal.fire('ยังไม่มีลายเซ็น','กรุณาลงลายเซ็นหรือแนบรูปลายเซ็นก่อนอนุมัติ','warning');return;} Swal.fire({title:'ยืนยันการอนุมัติและลงนาม?',icon:'question',showCancelButton:true,confirmButtonText:'ยืนยัน'}).then(res=>{if(!res.isConfirmed)return;const btn=document.getElementById('btnApprove');btn.disabled=true;Swal.fire({title:'กำลังบันทึก...',allowOutsideClick:false,didOpen:()=>Swal.showLoading()});google.script.run.withSuccessHandler(r=>{Swal.fire('สำเร็จ',r.message||'บันทึกเรียบร้อย','success').then(()=>location.reload());}).withFailureHandler(err=>{btn.disabled=false;Swal.fire('เกิดข้อผิดพลาด',err.message,'error');}).submitApprovalSignature(payload);});}
+    function rejectApproval(){const payload=buildPayload('reject'); if(!payload.comment){Swal.fire('กรุณาระบุเหตุผล','การไม่อนุมัติหรือส่งกลับแก้ไขต้องมีเหตุผล','warning');return;} Swal.fire({title:'ยืนยันไม่อนุมัติ/ส่งกลับแก้ไข?',icon:'warning',showCancelButton:true,confirmButtonText:'ยืนยัน'}).then(res=>{if(!res.isConfirmed)return;google.script.run.withSuccessHandler(r=>Swal.fire('บันทึกแล้ว',r.message,'success').then(()=>location.reload())).withFailureHandler(err=>Swal.fire('เกิดข้อผิดพลาด',err.message,'error')).submitApprovalSignature(payload);});}
+  </script>
+</body>
+</html>

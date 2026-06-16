@@ -56,13 +56,176 @@ const EDITABLE_SHEETS = [SHEET_ROOMS, SHEET_OFFICERS, SHEET_ADMIN, SHEET_APPROVE
 const VIEWABLE_SHEETS = [SHEET_ROOMS, SHEET_OFFICERS, SHEET_ADMIN, SHEET_BOOKINGS, "Evaluate", SHEET_LOGS, SHEET_APPROVERS, SHEET_APPROVAL_FLOW, SHEET_APPROVAL_STEPS, SHEET_APPROVAL_LOGS];
 const BOOKING_REQUIRED_HEADERS = [
   "Booking ID", "Timestamp", "Room ID", "Room Name", "Topic", "Requester Name",
-  "Start Time", "End Time", "Headcount", "Status (Approved/Cancelled)",
+  "Start Time", "End Time", "Headcount", "Status",
   "Requester Email", "Eval Sent", "Reminder30MinSent", "SetupDetails", "Layout",
   "EvaluationSummarySent", "Cancel Reason", "Last Updated", "Memo PDF URL",
   "Signature File ID", "Signature Image URL"
 ];
 const ALLOWED_UPLOAD_MIME_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp", "application/pdf"];
 const MAX_SETUP_FILE_SIZE_BYTES = 2 * 1024 * 1024;
+
+
+// --- Booking Status Model ---
+// สถานะนี้เป็นแกนกลางของระบบจองห้อง เพื่อให้ปฏิทิน การตรวจเวลาชน ระบบลงนาม และ trigger ต่าง ๆ ตีความตรงกัน
+const BOOKING_STATUS = {
+  PENDING_APPROVAL: "Pending Approval",
+  APPROVED: "Approved",
+  APPROVAL_ERROR: "Approval Error",
+  CANCELLED: "Cancelled",
+  REJECTED: "Rejected"
+};
+
+const BOOKING_STATUS_LABELS_TH = {
+  "Pending Approval": "รอลงนามเอกสาร",
+  "Approved": "อนุมัติครบถ้วน",
+  "Approval Error": "รอเจ้าหน้าที่ตรวจสอบกระบวนการลงนาม",
+  "Cancelled": "ยกเลิกแล้ว",
+  "Rejected": "ไม่อนุมัติ/ถูกส่งกลับ"
+};
+
+function normalizeBookingStatus_(status) {
+  const text = normalizeText_(status);
+  const lower = text.toLowerCase();
+  if (!text) return BOOKING_STATUS.PENDING_APPROVAL;
+  if (lower === "pending approval" || lower === "pending" || lower === "รอลงนามเอกสาร") return BOOKING_STATUS.PENDING_APPROVAL;
+  if (lower === "approved" || lower === "อนุมัติครบถ้วน") return BOOKING_STATUS.APPROVED;
+  if (lower === "approval error" || lower === "workflow error" || lower === "รอเจ้าหน้าที่ตรวจสอบกระบวนการลงนาม") return BOOKING_STATUS.APPROVAL_ERROR;
+  if (lower === "cancelled" || lower === "canceled" || lower === "ยกเลิกแล้ว") return BOOKING_STATUS.CANCELLED;
+  if (lower === "rejected" || lower === "ไม่อนุมัติ" || lower === "ไม่อนุมัติ/ถูกส่งกลับ") return BOOKING_STATUS.REJECTED;
+  return text;
+}
+
+function getBookingStatusLabel_(status) {
+  const normalized = normalizeBookingStatus_(status);
+  return BOOKING_STATUS_LABELS_TH[normalized] || normalized || "ไม่ทราบสถานะ";
+}
+
+function isBookingReleased_(status) {
+  const normalized = normalizeBookingStatus_(status);
+  return [BOOKING_STATUS.CANCELLED, BOOKING_STATUS.REJECTED].includes(normalized);
+}
+
+function isBookingBlockingRoom_(status) {
+  const normalized = normalizeBookingStatus_(status);
+  return [
+    BOOKING_STATUS.PENDING_APPROVAL,
+    BOOKING_STATUS.APPROVED,
+    BOOKING_STATUS.APPROVAL_ERROR
+  ].includes(normalized);
+}
+
+function isBookingVisibleOnCalendar_(status) {
+  return isBookingBlockingRoom_(status);
+}
+
+function isBookingEligibleForOperationalReminder_(status) {
+  return normalizeBookingStatus_(status) === BOOKING_STATUS.APPROVED;
+}
+
+function isBookingEligibleForEvaluation_(status) {
+  return normalizeBookingStatus_(status) === BOOKING_STATUS.APPROVED;
+}
+
+function getBookingCalendarTitle_(topic, requester, status) {
+  const normalized = normalizeBookingStatus_(status);
+  let prefix = "";
+  if (normalized === BOOKING_STATUS.PENDING_APPROVAL) prefix = "[รอลงนาม] ";
+  if (normalized === BOOKING_STATUS.APPROVAL_ERROR) prefix = "[รอตรวจสอบ] ";
+  return `${prefix}${normalizeText_(topic)} (${normalizeText_(requester)})`;
+}
+
+function setBookingStatusByRow_(bookSheet, cols, rowNo, status, reason) {
+  const normalized = normalizeBookingStatus_(status);
+  bookSheet.getRange(rowNo, cols.status).setValue(normalized);
+  if (cols.lastUpdated) bookSheet.getRange(rowNo, cols.lastUpdated).setValue(new Date());
+  if (reason !== undefined && reason !== null && cols.cancelReason) {
+    bookSheet.getRange(rowNo, cols.cancelReason).setValue(sanitizePlainText_(reason, 1000));
+  }
+  return normalized;
+}
+
+function setBookingStatusById_(bookingId, status, reason) {
+  ensureDatabaseSchema_();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const bookSheet = ss.getSheetByName(SHEET_BOOKINGS);
+  const cols = getBookingCols_(bookSheet);
+  const data = bookSheet.getDataRange().getValues();
+  const safeBookingId = normalizeText_(bookingId);
+  for (let i = 1; i < data.length; i++) {
+    if (normalizeText_(getCell_(data[i], cols.id)) === safeBookingId) {
+      return setBookingStatusByRow_(bookSheet, cols, i + 1, status, reason);
+    }
+  }
+  throw new Error("ไม่พบรายการจองสำหรับอัปเดตสถานะ: " + safeBookingId);
+}
+
+function markBookingApprovalError_(bookingId, errorMessage, actor) {
+  const reason = "Approval workflow error: " + sanitizePlainText_(errorMessage || "ไม่ทราบสาเหตุ", 900);
+  try {
+    const status = setBookingStatusById_(bookingId, BOOKING_STATUS.APPROVAL_ERROR, reason);
+    logAction(actor || "System", "Booking Approval Error", `Booking ID: ${bookingId} | ${reason}`);
+    return status;
+  } catch (e) {
+    logAction("System", "Booking Approval Error Update Failed", `Booking ID: ${bookingId} | ${e.message} | Original: ${reason}`);
+    throw e;
+  }
+}
+
+function markBookingPendingApproval_(bookingId, reason) {
+  const status = setBookingStatusById_(bookingId, BOOKING_STATUS.PENDING_APPROVAL, reason || "เริ่มกระบวนการลงนามเอกสาร");
+  logAction("System", "Booking Pending Approval", `Booking ID: ${bookingId}`);
+  return status;
+}
+
+function markBookingApproved_(bookingId, reason) {
+  const status = setBookingStatusById_(bookingId, BOOKING_STATUS.APPROVED, reason || "ลงนามเอกสารครบทุกขั้น");
+  logAction("System", "Booking Approved", `Booking ID: ${bookingId}`);
+  return status;
+}
+
+function markBookingRejected_(bookingId, reason) {
+  const status = setBookingStatusById_(bookingId, BOOKING_STATUS.REJECTED, reason || "เอกสารถูกปฏิเสธหรือส่งกลับแก้ไข");
+  logAction("System", "Booking Rejected", `Booking ID: ${bookingId} | เหตุผล: ${sanitizePlainText_(reason || "", 500)}`);
+  return status;
+}
+
+
+// --- Approval Permission Guards ---
+// ใช้เป็นด่านกลางเพื่อไม่ให้ลิงก์ลงนามที่ยังมี token อยู่ สามารถทำงานต่อได้เมื่อรายการจองถูกยกเลิกหรือถูกปฏิเสธแล้ว
+const APPROVAL_FLOW_PENDING_STATUSES = [
+  "PENDING_ROOM_OFFICER",
+  "PENDING_BUILDING_GROUP",
+  "PENDING_DEPUTY_DIRECTOR"
+];
+const APPROVAL_FLOW_TERMINAL_STATUSES = ["COMPLETED", "CANCELLED", "REJECTED", "SUPERSEDED"];
+const APPROVAL_STEP_OPEN_STATUSES = ["PENDING", "WAITING"];
+
+function isApprovalFlowPendingStatus_(status) {
+  return APPROVAL_FLOW_PENDING_STATUSES.includes(normalizeText_(status));
+}
+
+function isApprovalFlowTerminalStatus_(status) {
+  return APPROVAL_FLOW_TERMINAL_STATUSES.includes(normalizeText_(status));
+}
+
+function isApprovalStepOpenStatus_(status) {
+  return APPROVAL_STEP_OPEN_STATUSES.includes(normalizeText_(status));
+}
+
+function getBookingStatusById_(bookingId) {
+  return getBookingRecordObject_(bookingId).status;
+}
+
+function assertBookingCanBeApproved_(bookingId) {
+  const status = normalizeBookingStatus_(getBookingStatusById_(bookingId));
+  if (status === BOOKING_STATUS.CANCELLED) {
+    throw new Error("รายการจองนี้ถูกยกเลิกแล้ว ไม่สามารถลงนามเอกสารได้");
+  }
+  if (status === BOOKING_STATUS.REJECTED) {
+    throw new Error("รายการจองนี้ถูกไม่อนุมัติ/ถูกส่งกลับแล้ว ไม่สามารถลงนามเอกสารได้");
+  }
+  return status;
+}
 
 // --- Helper: Safe Text / HTML / Email ---
 function normalizeText_(value) {
@@ -371,6 +534,27 @@ function getCell_(row, colNumber) {
   return row[colNumber - 1];
 }
 
+function buildBookingObjectFromRow_(row, cols) {
+  return {
+    bookingId: normalizeText_(getCell_(row, cols.id)),
+    roomId: normalizeText_(getCell_(row, cols.roomId)),
+    roomName: normalizeText_(getCell_(row, cols.roomName)),
+    topic: normalizeText_(getCell_(row, cols.topic)),
+    requester: normalizeText_(getCell_(row, cols.requester)),
+    requesterEmail: normalizeText_(getCell_(row, cols.requesterEmail)),
+    start: getCell_(row, cols.start),
+    end: getCell_(row, cols.end),
+    headcount: Number(getCell_(row, cols.headcount)) || 0,
+    status: normalizeBookingStatus_(getCell_(row, cols.status)),
+    statusLabel: getBookingStatusLabel_(getCell_(row, cols.status)),
+    setupDetails: normalizeText_(getCell_(row, cols.setupDetails)),
+    layoutUrl: normalizeText_(getCell_(row, cols.layoutUrl)),
+    memoPdfUrl: normalizeText_(getCell_(row, cols.memoPdfUrl)),
+    signatureFileId: normalizeText_(getCell_(row, cols.signatureFileId)),
+    signatureImageUrl: normalizeText_(getCell_(row, cols.signatureImageUrl))
+  };
+}
+
 
 function generateBookingId_(bookSheet, cols) {
   const existingIds = bookSheet.getDataRange().getValues().slice(1).map(row => normalizeText_(getCell_(row, cols.id)));
@@ -584,7 +768,7 @@ function getBookingsData() {
   data.shift();
 
   return data
-    .filter(row => normalizeText_(getCell_(row, cols.id)) && normalizeText_(getCell_(row, cols.status)) !== "Cancelled")
+    .filter(row => normalizeText_(getCell_(row, cols.id)) && isBookingVisibleOnCalendar_(getCell_(row, cols.status)))
     .map(row => {
       const startObj = new Date(getCell_(row, cols.start));
       const endObj = new Date(getCell_(row, cols.end));
@@ -592,7 +776,7 @@ function getBookingsData() {
 
       return {
         id: normalizeText_(getCell_(row, cols.id)),
-        title: `${normalizeText_(getCell_(row, cols.topic))} (${normalizeText_(getCell_(row, cols.requester))})`,
+        title: getBookingCalendarTitle_(getCell_(row, cols.topic), getCell_(row, cols.requester), getCell_(row, cols.status)),
         start: startObj.toISOString(),
         end: endObj.toISOString(),
         resourceId: normalizeText_(getCell_(row, cols.roomId)),
@@ -605,7 +789,8 @@ function getBookingsData() {
           requesterEmail: normalizeText_(getCell_(row, cols.requesterEmail)),
           setupDetails: normalizeText_(getCell_(row, cols.setupDetails)),
           layoutUrl: normalizeText_(getCell_(row, cols.layoutUrl)),
-          status: normalizeText_(getCell_(row, cols.status))
+          status: normalizeBookingStatus_(getCell_(row, cols.status)),
+          statusLabel: getBookingStatusLabel_(getCell_(row, cols.status))
         }
       };
     })
@@ -630,7 +815,7 @@ function cancelBooking(bookingId, sessionToken, cancelReason) {
     const row = data[i];
     if (normalizeText_(getCell_(row, cols.id)) === safeBookingId) {
       const oldStatus = normalizeText_(getCell_(row, cols.status));
-      if (oldStatus === "Cancelled") {
+      if (normalizeBookingStatus_(oldStatus) === BOOKING_STATUS.CANCELLED) {
         throw new Error("รายการนี้ถูกยกเลิกไปแล้ว");
       }
 
@@ -649,9 +834,7 @@ function cancelBooking(bookingId, sessionToken, cancelReason) {
         cancelledAt: new Date()
       };
 
-      bookSheet.getRange(i + 1, cols.status).setValue("Cancelled");
-      bookSheet.getRange(i + 1, cols.cancelReason).setValue(safeReason);
-      bookSheet.getRange(i + 1, cols.lastUpdated).setValue(new Date());
+      setBookingStatusByRow_(bookSheet, cols, i + 1, BOOKING_STATUS.CANCELLED, safeReason);
       logAction(cancelledByForLog, "Cancel Booking", `ยกเลิกการจอง ID: ${safeBookingId} | เหตุผล: ${safeReason}`);
       try {
         cancelApprovalFlowForBooking_(safeBookingId, safeReason, cancelledByForLog);
@@ -665,7 +848,7 @@ function cancelBooking(bookingId, sessionToken, cancelReason) {
         logAction("System", "Cancellation Email Error", `Booking ID: ${safeBookingId} | ${emailErr.message}`);
       }
 
-      return { status: "Cancelled", bookingId: safeBookingId };
+      return { status: BOOKING_STATUS.CANCELLED, bookingId: safeBookingId };
     }
   }
   throw new Error("ไม่พบรายการจอง");
@@ -748,8 +931,8 @@ function createEmailTemplate(data, type, officerName = '') {
   if (type === 'user') {
     headerText = isUpdate ? 'แจ้งเตือนการแก้ไขการจอง' : 'ยืนยันการจองห้องประชุม';
     subText = isUpdate ?
-       `เรียนคุณ ${safe.requester},<br>รายการจองของคุณได้ถูก <strong>แก้ไข</strong> เรียบร้อยแล้ว รายละเอียดล่าสุดดังนี้:` :
-       `เรียนคุณ ${safe.requester},<br>การจองของคุณได้รับการยืนยันเรียบร้อยแล้ว รายละเอียดดังนี้:`;
+       `เรียน ${safe.requester},<br>รายการจองของคุณได้ถูก <strong>แก้ไข</strong> เรียบร้อยแล้ว รายละเอียดล่าสุดดังนี้:` :
+       `เรียน ${safe.requester},<br>การจองของคุณได้รับการยืนยันเรียบร้อยแล้ว รายละเอียดดังนี้:`;
   } else if (type === 'admin') {
     headerText = isUpdate ? 'เอกสารบันทึกข้อความกรณีแก้ไขการจอง' : 'เอกสารบันทึกข้อความการจองห้องประชุมใหม่';
     subText = isUpdate ?
@@ -758,8 +941,8 @@ function createEmailTemplate(data, type, officerName = '') {
   } else {
     headerText = isUpdate ? 'แจ้งเตือนการแก้ไขข้อมูลการจอง' : 'แจ้งเตือนการจองห้องประชุมใหม่';
     subText = isUpdate ?
-      `เรียนคุณ ${escapeHtml_(officerName)},<br>มีการ <strong>แก้ไข</strong> รายการจองห้องประชุมภายใต้การดูแลของคุณ รายละเอียดล่าสุดดังนี้:` :
-      `เรียนคุณ ${escapeHtml_(officerName)},<br>มีการจองห้องประชุมภายใต้การดูแลของคุณ รายละเอียดดังนี้:`;
+      `เรียน ${escapeHtml_(officerName)},<br>มีการ <strong>แก้ไข</strong> รายการจองห้องประชุมภายใต้การดูแลของคุณ รายละเอียดล่าสุดดังนี้:` :
+      `เรียน ${escapeHtml_(officerName)},<br>มีการจองห้องประชุมภายใต้การดูแลของคุณ รายละเอียดดังนี้:`;
   }
 
   const shouldShowMemoLink = type === 'admin' && data.memoPdfUrl;
@@ -826,80 +1009,72 @@ const EMAIL_THEME = {
 // --- Feature 1: Daily Summary to Admins ---
 // Trigger: ตั้งค่าให้รัน "ทุกวัน" เวลา "07:00 น."
 function sendDailySummaryToAdmins() {
+  ensureDatabaseSchema_();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const bookSheet = ss.getSheetByName(SHEET_BOOKINGS);
-  const adminSheet = ss.getSheetByName(SHEET_ADMIN);
-  
-  // 1. Get Admin Emails (Column E -> Index 4)
-  const admins = adminSheet.getDataRange().getValues();
-  admins.shift(); // Remove header
-  const adminEmails = admins
-    .filter(row => row[4] && row[4].toString().includes('@')) // เช็คว่ามีอีเมล
-    .map(row => row[4])
-    .join(',');
+  const adminRecipients = getAdminNotificationRecipients_();
+  const adminEmails = uniqueEmailList_([adminRecipients.to, adminRecipients.cc]).join(',');
 
   if (!adminEmails) {
     console.log("No admin emails found.");
     return;
   }
 
-  // 2. Get Today's Bookings
+  const cols = getBookingCols_(bookSheet);
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  
-  const bookings = bookSheet.getDataRange().getValues();
-  bookings.shift(); // Remove header
 
-  const todaysBookings = bookings.filter(row => {
-    const status = row[9];
-    if (status === 'Cancelled') return false;
-    
-    const startDate = new Date(row[6]);
-    const checkDate = new Date(startDate);
-    checkDate.setHours(0, 0, 0, 0);
-    
-    return checkDate.getTime() === today.getTime();
-  }).sort((a, b) => new Date(a[6]) - new Date(b[6])); // เรียงตามเวลา
+  const bookings = bookSheet.getDataRange().getValues().slice(1);
+  const todaysBookings = bookings
+    .filter(row => {
+      const status = getCell_(row, cols.status);
+      if (!isBookingVisibleOnCalendar_(status)) return false;
+      const startDate = new Date(getCell_(row, cols.start));
+      if (isNaN(startDate.getTime())) return false;
+      const checkDate = new Date(startDate);
+      checkDate.setHours(0, 0, 0, 0);
+      return checkDate.getTime() === today.getTime();
+    })
+    .sort((a, b) => new Date(getCell_(a, cols.start)) - new Date(getCell_(b, cols.start)));
 
-  // 3. Prepare Email Content
   const dateStr = today.toLocaleDateString('th-TH', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
   let emailBody = '';
 
   if (todaysBookings.length > 0) {
     let rowsHtml = '';
     todaysBookings.forEach(row => {
-      const timeStart = new Date(row[6]).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
-      const timeEnd = new Date(row[7]).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
-      
+      const booking = buildBookingObjectFromRow_(row, cols);
+      const timeStart = new Date(booking.start).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+      const timeEnd = new Date(booking.end).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+      const statusLabel = getBookingStatusLabel_(booking.status);
+
       rowsHtml += `
         <tr style="border-bottom: 1px solid #eee;">
-          <td style="padding: 12px; color: ${EMAIL_THEME.primary}; font-weight:bold;">${timeStart} - ${timeEnd}</td>
+          <td style="padding: 12px; color: ${EMAIL_THEME.primary}; font-weight:bold; white-space:nowrap;">${timeStart} - ${timeEnd}</td>
           <td style="padding: 12px;">
-            <div style="font-weight:bold; color:#333;">${row[3]}</div>
-            <div style="font-size:12px; color:#666;">📍 ${row[1]}</div>
+            <div style="font-weight:bold; color:#333;">${escapeHtml_(booking.topic)}</div>
+            <div style="font-size:12px; color:#666;">📍 ${escapeHtml_(booking.roomName)} | ${escapeHtml_(statusLabel)}</div>
           </td>
-          <td style="padding: 12px; text-align:right;">${row[5]}</td>
+          <td style="padding: 12px; text-align:right;">${escapeHtml_(booking.requester)}</td>
         </tr>
       `;
     });
 
     emailBody = `
       <div style="background-color: #ffffff; border-radius: 8px; padding: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.05);">
-        <p style="margin-bottom: 15px; color: #333;">เรียน เจ้าหน้าที่ผู้ดูแลระบบ,<br>ขอสรุปรายการจองห้องประชุมประจำวันที่ <strong>${dateStr}</strong> ดังนี้:</p>
+        <p style="margin-bottom: 15px; color: #333;">เรียน เจ้าหน้าที่ผู้ดูแลระบบ,<br>ขอสรุปรายการจองห้องประชุมประจำวันที่ <strong>${escapeHtml_(dateStr)}</strong> ดังนี้:</p>
         <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
           <thead style="background-color: ${EMAIL_THEME.bg}; color: #555;">
             <tr>
               <th style="padding: 10px; text-align:left;">เวลา</th>
-              <th style="padding: 10px; text-align:left;">รายละเอียดห้อง/หัวข้อ</th>
+              <th style="padding: 10px; text-align:left;">รายละเอียดห้อง/หัวข้อ/สถานะ</th>
               <th style="padding: 10px; text-align:right;">ผู้จอง</th>
             </tr>
           </thead>
-          <tbody>
-            ${rowsHtml}
-          </tbody>
+          <tbody>${rowsHtml}</tbody>
         </table>
         <div style="margin-top: 20px; text-align:center;">
-          <a href="${ScriptApp.getService().getUrl()}" style="background-color: ${EMAIL_THEME.primary}; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-size: 14px;">เข้าสู่ระบบจัดการ</a>
+          <a href="${escapeHtml_(getWebAppUrl_())}" style="background-color: ${EMAIL_THEME.primary}; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-size: 14px;">เข้าสู่ระบบจัดการ</a>
         </div>
       </div>
     `;
@@ -907,12 +1082,11 @@ function sendDailySummaryToAdmins() {
     emailBody = `
       <div style="background-color: #ffffff; border-radius: 8px; padding: 40px; text-align: center; border: 1px dashed #ccc;">
         <h3 style="color: #666; margin: 0;">🌴 วันนี้ไม่มีรายการจองห้องประชุม</h3>
-        <p style="color: #999; font-size: 14px; margin-top: 10px;">ประจำวันที่ ${dateStr}</p>
+        <p style="color: #999; font-size: 14px; margin-top: 10px;">ประจำวันที่ ${escapeHtml_(dateStr)}</p>
       </div>
     `;
   }
 
-  // 4. Send Email
   MailApp.sendEmail({
     to: adminEmails,
     subject: `📅 สรุปการใช้ห้องประชุมประจำวัน (${dateStr})`,
@@ -924,167 +1098,106 @@ function sendDailySummaryToAdmins() {
 // --- Feature 2a: 1 Day Advance Reminder ---
 // Trigger: ตั้งค่าให้รัน "ทุกวัน" เวลา "08:00 น."
 function sendOneDayAdvanceReminder() {
+  ensureDatabaseSchema_();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const bookings = ss.getSheetByName(SHEET_BOOKINGS).getDataRange().getValues();
-  const officers = ss.getSheetByName(SHEET_OFFICERS).getDataRange().getValues();
-  
-  bookings.shift(); // Remove header
-  officers.shift(); // Remove header
+  const bookSheet = ss.getSheetByName(SHEET_BOOKINGS);
+  const cols = getBookingCols_(bookSheet);
+  const bookings = bookSheet.getDataRange().getValues().slice(1);
 
-  // หา "วันพรุ่งนี้" (Reset เวลาเป็น 00:00)
   const tomorrow = new Date();
   tomorrow.setDate(tomorrow.getDate() + 1);
   tomorrow.setHours(0, 0, 0, 0);
 
   bookings.forEach(row => {
-    if (row[9] === 'Cancelled') return;
-
-    const startDate = new Date(row[6]);
+    if (!isBookingEligibleForOperationalReminder_(getCell_(row, cols.status))) return;
+    const startDate = new Date(getCell_(row, cols.start));
+    if (isNaN(startDate.getTime())) return;
     const checkDate = new Date(startDate);
     checkDate.setHours(0, 0, 0, 0);
-
-    // เช็คว่าเป็นวันพรุ่งนี้หรือไม่
     if (checkDate.getTime() === tomorrow.getTime()) {
-      sendReminderEmail(row, officers, '1_day_advance');
+      sendReminderEmail(row, cols, '1_day_advance');
     }
   });
 }
 
 // --- Feature 2b: 30 Minutes Before Reminder ---
-// Trigger: ตั้งค่าให้รัน "ทุกๆ 10 หรือ 15 นาที" (Minutes timer)
-// --- Feature 2b: 30 Minutes Before Reminder (แก้ไขใหม่ให้เสถียร 100%) ---
 // Trigger: แนะนำให้ตั้งค่ารัน "ทุกๆ 5 หรือ 10 นาที"
 function sendUrgentReminders() {
+  ensureDatabaseSchema_();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const bookSheet = ss.getSheetByName(SHEET_BOOKINGS);
+  const cols = getBookingCols_(bookSheet);
   const bookings = bookSheet.getDataRange().getValues();
-  
-  const officerSheet = ss.getSheetByName(SHEET_OFFICERS);
-  if (!officerSheet) return;
-  const officers = officerSheet.getDataRange().getValues();
-  officers.shift(); // เอา Header ของเจ้าหน้าที่ออก
-
   const now = new Date();
-  const bufferTime = 30 * 60 * 1000; // 30 นาที (หน่วย millisecond)
+  const bufferTime = 30 * 60 * 1000;
 
-  // เริ่มลูปที่ i = 1 เพื่อข้าม Header แถวแรกของ Bookings
   for (let i = 1; i < bookings.length; i++) {
     const row = bookings[i];
-    if (!row[0]) continue; // ข้ามบรรทัดว่าง
+    if (!normalizeText_(getCell_(row, cols.id))) continue;
+    if (!isBookingEligibleForOperationalReminder_(getCell_(row, cols.status))) continue;
+    if (isSent_(getCell_(row, cols.reminder30))) continue;
 
-    const status = row[9];
-    const reminder30MinStatus = row[12]; // ใช้คอลัมน์ M (Index 12) บันทึกสถานะว่าส่งเตือนด่วนแล้วหรือยัง
-
-    if (status === 'Cancelled') continue;
-
-    const startDate = new Date(row[6]);
-    if (isNaN(startDate.getTime())) continue; // ข้ามบรรทัดที่รูปแบบเวลาพัง
+    const startDate = new Date(getCell_(row, cols.start));
+    if (isNaN(startDate.getTime())) continue;
 
     const timeDiff = startDate.getTime() - now.getTime();
-    
-    // เช็คว่าเป็นรายการจองของวันนี้หรือไม่
     const isToday = startDate.toDateString() === now.toDateString();
-
-    // เงื่อนไข: 
-    // 1. เป็นการจองของวันนี้ 
-    // 2. เวลาเหลือน้อยกว่าหรือเท่ากับ 30 นาที และยังไม่ถึงเวลาเริ่มการประชุม (0 < timeDiff <= 30 นาที)
-    // 3. คอลัมน์ M ยังไม่ถูกบันทึกว่า 'Sent'
-    if (isToday && timeDiff > 0 && timeDiff <= bufferTime && reminder30MinStatus !== 'Sent') {
-      
-      // 1. เรียกฟังก์ชันส่งอีเมล
-      sendReminderEmail(row, officers, '30_min_urgent');
-      
-      // 2. บันทึกสถานะลงในชีท คอลัมน์ M (คอลัมน์ที่ 13) ว่า "Sent" เพื่อให้มันส่งแค่ครั้งเดียวชัวร์ๆ
-      bookSheet.getRange(i + 1, 13).setValue('Sent');
+    if (isToday && timeDiff > 0 && timeDiff <= bufferTime) {
+      sendReminderEmail(row, cols, '30_min_urgent');
+      bookSheet.getRange(i + 1, cols.reminder30).setValue('Sent');
     }
   }
 }
 
-// --- Helper: Send Specific Reminder Logic (ปรับปรุงการค้นหาเจ้าหน้าที่) ---
-function sendReminderEmail(bookingRow, officerData, type) {
-  // Unpack data (ดึงข้อมูลให้ตรง Index)
-  const [bId, , roomId, roomName, topic, requester, start, end, , , reqEmail] = bookingRow;
-  
-  // 1. Find Officer Emails for this room (แก้ไขบัค .includes)
-  const officerEmails = officerData
-    .filter(off => {
-      if (!off[2] || !off[1]) return false;
-      // แยกห้องรับผิดชอบด้วยเครื่องหมายจุลภาค แล้วเทียบทีละห้องแบบเป๊ะๆ 
-      // (ป้องกันปัญหาเจ้าหน้าที่ห้อง 10 ได้รับเมลห้อง 1)
-      const assignedRooms = off[2].toString().split(',').map(r => r.trim());
-      return assignedRooms.includes(roomId.toString());
-    })
-    .map(off => off[1]);
+// --- Helper: Send Specific Reminder Logic ---
+function sendReminderEmail(bookingRow, bookingCols, type) {
+  const booking = buildBookingObjectFromRow_(bookingRow, bookingCols);
+  const officerRecipients = getOfficerRecipientsForRoom_(booking.roomId);
 
-  // 2. Combine Recipients (Booker + Officers)
-  let recipients = [];
-  if (reqEmail) recipients.push(reqEmail);
-  if (officerEmails.length > 0) recipients = recipients.concat(officerEmails);
-  
-  // Remove duplicates & filter out empty
-  const uniqueRecipients = [...new Set(recipients)].filter(e => e).join(',');
-  
-  if (!uniqueRecipients) return; // ถ้าไม่มีอีเมลใครเลยให้หยุดทำงาน
+  const recipients = uniqueEmailList_([booking.requesterEmail, officerRecipients.to, officerRecipients.cc]);
+  if (recipients.length === 0) return;
 
-  // 3. Format Date/Time
-  const fmtDate = new Date(start).toLocaleDateString('th-TH', { day: 'numeric', month: 'long', year: 'numeric' });
-  const fmtTime = `${new Date(start).toLocaleTimeString('th-TH', {hour:'2-digit', minute:'2-digit'})} - ${new Date(end).toLocaleTimeString('th-TH', {hour:'2-digit', minute:'2-digit'})}`;
+  const fmtDate = new Date(booking.start).toLocaleDateString('th-TH', { day: 'numeric', month: 'long', year: 'numeric' });
+  const fmtTime = `${new Date(booking.start).toLocaleTimeString('th-TH', {hour:'2-digit', minute:'2-digit'})} - ${new Date(booking.end).toLocaleTimeString('th-TH', {hour:'2-digit', minute:'2-digit'})}`;
 
-  // 4. Content Config
   let subject, title, color, subMsg;
   if (type === '1_day_advance') {
-    subject = `🔔 แจ้งเตือนล่วงหน้า 1 วัน: ${topic}`;
+    subject = `🔔 แจ้งเตือนล่วงหน้า 1 วัน: ${booking.topic}`;
     title = 'เตรียมความพร้อมก่อนการประชุม';
     color = EMAIL_THEME.primary;
-    subMsg = `ระบบขอแจ้งเตือนรายการจองห้องประชุมที่จะมาถึงใน <strong>วันพรุ่งนี้ (${fmtDate})</strong>`;
+    subMsg = `ระบบขอแจ้งเตือนรายการจองห้องประชุมที่จะมาถึงใน <strong>วันพรุ่งนี้ (${escapeHtml_(fmtDate)})</strong>`;
   } else {
-    subject = `⏰ อีก 30 นาทีเริ่มการประชุม: ${topic}`;
+    subject = `⏰ อีก 30 นาทีเริ่มการประชุม: ${booking.topic}`;
     title = 'ใกล้ถึงเวลาการประชุมแล้ว';
-    color = EMAIL_THEME.danger; // สีแดงแจ้งเตือนด่วน
+    color = EMAIL_THEME.danger;
     subMsg = `ระบบขอแจ้งเตือนรายการจองห้องประชุมที่จะเริ่มในอีก <strong>30 นาที</strong>`;
   }
 
-  // 5. HTML Body
   const bodyHtml = `
     <div style="text-align: center; margin-bottom: 20px;">
       <p style="font-size: 16px; color: #555;">${subMsg}</p>
     </div>
     <div style="background-color: #fff; border: 1px solid #eee; border-radius: 8px; padding: 20px;">
        <table style="width: 100%; border-collapse: collapse;">
-          <tr>
-             <td style="padding: 8px; color:#888; width: 30%;">หัวข้อ:</td>
-             <td style="padding: 8px; font-weight:bold; font-size:16px;">${topic}</td>
-          </tr>
-          <tr>
-             <td style="padding: 8px; color:#888;">ห้องประชุม:</td>
-             <td style="padding: 8px;">${roomName}</td>
-          </tr>
-          <tr>
-             <td style="padding: 8px; color:#888;">เวลา:</td>
-             <td style="padding: 8px; color:${color}; font-weight:bold;">${fmtTime} (${fmtDate})</td>
-          </tr>
-            <tr>
-             <td style="padding: 8px; color:#888;">ผู้จอง:</td>
-             <td style="padding: 8px;">${requester}</td>
-          </tr>
+          <tr><td style="padding: 8px; color:#888; width: 30%;">หัวข้อ:</td><td style="padding: 8px; font-weight:bold; font-size:16px;">${escapeHtml_(booking.topic)}</td></tr>
+          <tr><td style="padding: 8px; color:#888;">ห้องประชุม:</td><td style="padding: 8px;">${escapeHtml_(booking.roomName)}</td></tr>
+          <tr><td style="padding: 8px; color:#888;">เวลา:</td><td style="padding: 8px; color:${color}; font-weight:bold;">${escapeHtml_(fmtTime)} (${escapeHtml_(fmtDate)})</td></tr>
+          <tr><td style="padding: 8px; color:#888;">ผู้จอง:</td><td style="padding: 8px;">${escapeHtml_(booking.requester)}</td></tr>
        </table>
     </div>
     <div style="margin-top: 20px; font-size: 12px; color: #999; text-align: center;">
-      กรุณาตรวจสอบความเรียบร้อยของสถานที่และอุปกรณ์ก่อนเริ่มการประชุม
+      กรุณาตรวจสอบความพร้อมของห้องและอุปกรณ์ก่อนถึงเวลาการประชุม
     </div>
   `;
 
-  // 6. Send
   MailApp.sendEmail({
-    to: uniqueRecipients,
+    to: recipients.join(','),
     subject: subject,
     htmlBody: createBaseEmailTemplate(title, bodyHtml, color),
     name: "Meeting Room System"
   });
 }
 
-// --- Helper: Universal Email Template Wrapper ---
-// ใช้สร้าง Template กลาง เพื่อความสวยงามและเป็นรูปแบบเดียวกัน
 function createBaseEmailTemplate(headerTitle, contentHtml, headerColor) {
   return `
     <!DOCTYPE html>
@@ -1135,7 +1248,7 @@ function sendPostMeetingSurvey() {
 
     if (!bookingId || isNaN(endTime.getTime())) continue;
 
-    if (status !== "Cancelled" && userEmail && endTime < now && !isSent_(evalSentStatus)) {
+    if (isBookingEligibleForEvaluation_(status) && userEmail && endTime < now && !isSent_(evalSentStatus)) {
       try {
         sendEvaluationEmail(userEmail, bookingId, topic, roomName);
         bookSheet.getRange(i + 1, cols.evalSent).setValue("Sent");
@@ -1194,8 +1307,21 @@ function getEvaluationAvailabilityForBooking_(row, cols) {
   const endTime = new Date(getCell_(row, cols.end));
   const now = new Date();
 
-  if (status === "Cancelled") {
+  const normalizedStatus = normalizeBookingStatus_(status);
+  if (normalizedStatus === BOOKING_STATUS.CANCELLED) {
     return { canSend: false, statusLabel: "ยกเลิกแล้ว", reason: "รายการจองนี้ถูกยกเลิกแล้ว" };
+  }
+  if (normalizedStatus === BOOKING_STATUS.REJECTED) {
+    return { canSend: false, statusLabel: "ไม่อนุมัติ", reason: "รายการจองนี้ไม่ผ่านการอนุมัติ จึงไม่สามารถส่งแบบประเมินได้" };
+  }
+  if (normalizedStatus === BOOKING_STATUS.PENDING_APPROVAL) {
+    return { canSend: false, statusLabel: "รอลงนาม", reason: "รายการนี้ยังลงนามเอกสารไม่ครบ จึงยังไม่สามารถส่งแบบประเมินได้" };
+  }
+  if (normalizedStatus === BOOKING_STATUS.APPROVAL_ERROR) {
+    return { canSend: false, statusLabel: "รอตรวจสอบ", reason: "รายการนี้อยู่ระหว่างให้เจ้าหน้าที่ตรวจสอบกระบวนการลงนาม จึงยังไม่สามารถส่งแบบประเมินได้" };
+  }
+  if (!isBookingEligibleForEvaluation_(normalizedStatus)) {
+    return { canSend: false, statusLabel: getBookingStatusLabel_(normalizedStatus), reason: "สถานะรายการนี้ยังไม่พร้อมสำหรับการประเมิน" };
   }
   if (!isValidEmail_(requesterEmail)) {
     return { canSend: false, statusLabel: "ไม่มีอีเมลผู้จอง", reason: "รายการนี้ไม่มีอีเมลผู้จองที่ถูกต้อง" };
@@ -1234,7 +1360,7 @@ function getBookingOptionsForEvaluationResend(sessionToken) {
       const topic = normalizeText_(getCell_(row, cols.topic));
       const requester = normalizeText_(getCell_(row, cols.requester));
       const requesterEmail = normalizeText_(getCell_(row, cols.requesterEmail));
-      const bookingStatus = normalizeText_(getCell_(row, cols.status));
+      const bookingStatus = normalizeBookingStatus_(getCell_(row, cols.status));
       const evalSent = normalizeText_(getCell_(row, cols.evalSent));
       const startValue = getCell_(row, cols.start);
       const endValue = getCell_(row, cols.end);
@@ -1328,8 +1454,21 @@ function getBookingDetailsForEval(bookingId) {
   const booking = bookings.find(r => normalizeText_(getCell_(r, cols.id)) === normalizeText_(bookingId));
 
   if (!booking) throw new Error("ไม่พบข้อมูลการจอง");
-  if (normalizeText_(getCell_(booking, cols.status)) === "Cancelled") {
+  const bookingStatus = normalizeBookingStatus_(getCell_(booking, cols.status));
+  if (bookingStatus === BOOKING_STATUS.CANCELLED) {
     return { error: "CANCELLED", message: "รายการจองนี้ถูกยกเลิกแล้ว" };
+  }
+  if (bookingStatus === BOOKING_STATUS.REJECTED) {
+    return { error: "REJECTED", message: "รายการจองนี้ไม่ผ่านการอนุมัติ จึงไม่เปิดให้ประเมิน" };
+  }
+  if (bookingStatus === BOOKING_STATUS.PENDING_APPROVAL) {
+    return { error: "PENDING_APPROVAL", message: "รายการนี้ยังอยู่ระหว่างรอลงนามเอกสาร" };
+  }
+  if (bookingStatus === BOOKING_STATUS.APPROVAL_ERROR) {
+    return { error: "APPROVAL_ERROR", message: "รายการนี้อยู่ระหว่างเจ้าหน้าที่ตรวจสอบกระบวนการลงนาม" };
+  }
+  if (bookingStatus !== BOOKING_STATUS.APPROVED) {
+    return { error: "NOT_APPROVED", message: "รายการนี้ยังไม่อยู่ในสถานะอนุมัติครบถ้วน" };
   }
 
   const endTime = new Date(getCell_(booking, cols.end));
@@ -1371,7 +1510,10 @@ function submitEvaluation(form) {
   const booking = bookings.find(r => normalizeText_(getCell_(r, cols.id)) === normalizeText_(form.bookingId));
 
   if (!booking) throw new Error("ไม่พบข้อมูลการจอง");
-  if (normalizeText_(getCell_(booking, cols.status)) === "Cancelled") throw new Error("รายการจองนี้ถูกยกเลิกแล้ว");
+  const bookingStatus = normalizeBookingStatus_(getCell_(booking, cols.status));
+  if (bookingStatus === BOOKING_STATUS.CANCELLED) throw new Error("รายการจองนี้ถูกยกเลิกแล้ว");
+  if (bookingStatus === BOOKING_STATUS.REJECTED) throw new Error("รายการจองนี้ไม่ผ่านการอนุมัติ จึงไม่สามารถประเมินได้");
+  if (bookingStatus !== BOOKING_STATUS.APPROVED) throw new Error("รายการนี้ยังลงนามเอกสารไม่ครบหรืออยู่ระหว่างเจ้าหน้าที่ตรวจสอบ จึงยังไม่สามารถประเมินได้");
 
   const endTime = new Date(getCell_(booking, cols.end));
   const now = new Date();
@@ -1555,7 +1697,7 @@ function sendEvaluationSummary() {
     const endTime = new Date(getCell_(row, cols.end));
     const summarySent = normalizeText_(getCell_(row, cols.summarySent));
 
-    if (!bId || status === "Cancelled" || !reqEmail || isNaN(endTime.getTime())) continue;
+    if (!bId || !isBookingEligibleForEvaluation_(status) || !reqEmail || isNaN(endTime.getTime())) continue;
 
     const diffDaysAfterEnd = (now.getTime() - endTime.getTime()) / (1000 * 60 * 60 * 24);
 
@@ -1799,7 +1941,7 @@ function saveBooking(formObject, sessionToken) {
 
       if (!bId || isNaN(existingStart.getTime()) || isNaN(existingEnd.getTime())) continue;
 
-      if (existingRoomId === room.roomId && status !== "Cancelled" && bId !== bookingIdForEdit) {
+      if (existingRoomId === room.roomId && isBookingBlockingRoom_(status) && bId !== bookingIdForEdit) {
         if (newStart.getTime() < existingEnd.getTime() && newEnd.getTime() > existingStart.getTime()) {
           throw new Error(`ห้องไม่ว่างในช่วงเวลาดังกล่าว (ชนกับรายการ: ${normalizeText_(getCell_(row, cols.topic))} เวลา ${existingStart.toLocaleTimeString('th-TH',{hour:'2-digit', minute:'2-digit'})} - ${existingEnd.toLocaleTimeString('th-TH',{hour:'2-digit', minute:'2-digit'})})`);
         }
@@ -1812,7 +1954,7 @@ function saveBooking(formObject, sessionToken) {
     }
 
     const timeDiff = newStart.getTime() - now.getTime();
-    const reminderStatus = (timeDiff > 0 && timeDiff <= (30 * 60 * 1000)) ? "Sent" : "";
+    const reminderStatus = ""; // จะถูกตั้งเป็น Sent เฉพาะเมื่อ trigger ส่งแจ้งเตือนด่วนจริงแล้วเท่านั้น
 
     let fileUrl = "";
     let layoutBlob = null;
@@ -1872,6 +2014,9 @@ function saveBooking(formObject, sessionToken) {
       bookSheet.getRange(existingRowIndex, cols.signatureFileId).setValue(signatureResult.fileId);
       bookSheet.getRange(existingRowIndex, cols.signatureImageUrl).setValue(signatureResult.url);
       if (fileUrl) bookSheet.getRange(existingRowIndex, cols.layoutUrl).setValue(fileUrl);
+      setBookingStatusByRow_(bookSheet, cols, existingRowIndex, BOOKING_STATUS.PENDING_APPROVAL, "แก้ไขรายการและเริ่มกระบวนการลงนามใหม่");
+      if (cols.evalSent) bookSheet.getRange(existingRowIndex, cols.evalSent).setValue('');
+      if (cols.summarySent) bookSheet.getRange(existingRowIndex, cols.summarySent).setValue('');
       databaseWritten = true;
 
       logAction(currentUser, "Update Booking", `แก้ไขการจอง ID: ${bookingIdForEdit} และสร้าง PDF บันทึกข้อความ: ${memoResult.url}`);
@@ -1893,6 +2038,7 @@ function saveBooking(formObject, sessionToken) {
       }, memoResult.blob, layoutBlob);
 
       const approvalReport = startApprovalWorkflowSafely_(bookingIdForEdit, currentUser, "UPDATE_BOOKING");
+      const approvalWarning = approvalReport.created ? "" : " ระบบรับการจองและกันห้องไว้แล้ว แต่กระบวนการลงนามมีปัญหา ระบบตั้งสถานะเป็น Approval Error กรุณาให้ผู้ดูแลระบบตรวจสอบ";
 
       return {
         status: "Updated",
@@ -1900,7 +2046,7 @@ function saveBooking(formObject, sessionToken) {
         memoPdfUrl: memoResult.url,
         notificationReport: notificationReport,
         approvalReport: approvalReport,
-        emailWarning: notificationReport.adminSent ? "" : "บันทึกข้อมูลและสร้าง PDF สำเร็จแล้ว แต่ส่งอีเมลแนบ PDF ถึงรายชื่อในชีท Admin ไม่สำเร็จ กรุณาตรวจสอบชีท Logs"
+        emailWarning: (notificationReport.adminSent ? "" : "บันทึกข้อมูลและสร้าง PDF สำเร็จแล้ว แต่ส่งอีเมลแนบ PDF ถึงรายชื่อในชีท Admin ไม่สำเร็จ กรุณาตรวจสอบชีท Logs") + approvalWarning
       };
     }
 
@@ -1915,7 +2061,7 @@ function saveBooking(formObject, sessionToken) {
       newStart,
       newEnd,
       headcount,
-      'Approved',
+      BOOKING_STATUS.PENDING_APPROVAL,
       requesterEmail,
       '',
       reminderStatus,
@@ -1950,6 +2096,7 @@ function saveBooking(formObject, sessionToken) {
     }, memoResult.blob, layoutBlob);
 
     const approvalReport = startApprovalWorkflowSafely_(bookingId, currentUser, "NEW_BOOKING");
+    const approvalWarning = approvalReport.created ? "" : " ระบบรับการจองและกันห้องไว้แล้ว แต่กระบวนการลงนามมีปัญหา ระบบตั้งสถานะเป็น Approval Error กรุณาให้ผู้ดูแลระบบตรวจสอบ";
 
     return {
       status: "Saved",
@@ -1957,7 +2104,7 @@ function saveBooking(formObject, sessionToken) {
       memoPdfUrl: memoResult.url,
       notificationReport: notificationReport,
       approvalReport: approvalReport,
-      emailWarning: notificationReport.adminSent ? "" : "บันทึกข้อมูลและสร้าง PDF สำเร็จแล้ว แต่ส่งอีเมลแนบ PDF ถึงรายชื่อในชีท Admin ไม่สำเร็จ กรุณาตรวจสอบชีท Logs"
+      emailWarning: (notificationReport.adminSent ? "" : "บันทึกข้อมูลและสร้าง PDF สำเร็จแล้ว แต่ส่งอีเมลแนบ PDF ถึงรายชื่อในชีท Admin ไม่สำเร็จ กรุณาตรวจสอบชีท Logs") + approvalWarning
     };
   } catch (error) {
     // หากสร้าง PDF แล้วแต่เกิดปัญหาก่อนบันทึกฐานข้อมูล ให้ย้าย PDF ที่สร้างค้างไว้ลงถังขยะเพื่อลดไฟล์กำพร้า
@@ -2211,7 +2358,7 @@ function buildCancellationEmailHtml_(data, recipientType) {
   };
 
   const intro = recipientType === 'user'
-    ? `เรียนคุณ ${safe.requester},<br>รายการจองห้องประชุมของท่านถูกยกเลิกแล้ว รายละเอียดดังนี้:`
+    ? `เรียน ${safe.requester},<br>รายการจองห้องประชุมของท่านถูกยกเลิกแล้ว รายละเอียดดังนี้:`
     : `เรียนเจ้าหน้าที่ผู้รับผิดชอบห้องประชุม,<br>มีรายการจองห้องประชุมภายใต้การดูแลของท่านถูกยกเลิกแล้ว รายละเอียดดังนี้:`;
 
   const contentHtml = `
@@ -2279,8 +2426,12 @@ function getDashboardData(sessionToken) {
   const todayEnd = new Date(todayStart);
   todayEnd.setDate(todayEnd.getDate() + 1);
 
-  const activeRows = rows.filter(row => normalizeText_(getCell_(row, cols.status)) !== "Cancelled");
-  const cancelledRows = rows.filter(row => normalizeText_(getCell_(row, cols.status)) === "Cancelled");
+  const activeRows = rows.filter(row => isBookingBlockingRoom_(getCell_(row, cols.status)));
+  const approvedRows = rows.filter(row => normalizeBookingStatus_(getCell_(row, cols.status)) === BOOKING_STATUS.APPROVED);
+  const pendingApprovalRows = rows.filter(row => normalizeBookingStatus_(getCell_(row, cols.status)) === BOOKING_STATUS.PENDING_APPROVAL);
+  const approvalErrorRows = rows.filter(row => normalizeBookingStatus_(getCell_(row, cols.status)) === BOOKING_STATUS.APPROVAL_ERROR);
+  const cancelledRows = rows.filter(row => normalizeBookingStatus_(getCell_(row, cols.status)) === BOOKING_STATUS.CANCELLED);
+  const rejectedRows = rows.filter(row => normalizeBookingStatus_(getCell_(row, cols.status)) === BOOKING_STATUS.REJECTED);
   const todayRows = activeRows.filter(row => {
     const start = new Date(getCell_(row, cols.start));
     return !isNaN(start.getTime()) && start >= todayStart && start < todayEnd;
@@ -2289,7 +2440,7 @@ function getDashboardData(sessionToken) {
     const start = new Date(getCell_(row, cols.start));
     return !isNaN(start.getTime()) && start >= now;
   });
-  const waitingEvalRows = activeRows.filter(row => {
+  const waitingEvalRows = approvedRows.filter(row => {
     const end = new Date(getCell_(row, cols.end));
     return !isNaN(end.getTime()) && end < now && !isSent_(getCell_(row, cols.evalSent));
   });
@@ -2339,7 +2490,11 @@ function getDashboardData(sessionToken) {
     generatedAt: new Date().toLocaleString('th-TH'),
     totalBookings: rows.length,
     activeBookings: activeRows.length,
+    approvedBookings: approvedRows.length,
+    pendingApprovalBookings: pendingApprovalRows.length,
+    approvalErrorBookings: approvalErrorRows.length,
     cancelledBookings: cancelledRows.length,
+    rejectedBookings: rejectedRows.length,
     todayBookings: todayRows.length,
     upcomingBookings: upcomingRows.length,
     waitingEvaluation: waitingEvalRows.length,
@@ -2358,6 +2513,8 @@ function getDashboardData(sessionToken) {
         roomName: normalizeText_(getCell_(row, cols.roomName)),
         topic: normalizeText_(getCell_(row, cols.topic)),
         requester: normalizeText_(getCell_(row, cols.requester)),
+        status: normalizeBookingStatus_(getCell_(row, cols.status)),
+        statusLabel: getBookingStatusLabel_(getCell_(row, cols.status)),
         start: new Date(getCell_(row, cols.start)).toLocaleString('th-TH'),
         end: new Date(getCell_(row, cols.end)).toLocaleString('th-TH')
       }))
@@ -2386,7 +2543,7 @@ function getBookingOptionsForMemo(sessionToken) {
       const roomName = normalizeText_(getCell_(row, cols.roomName));
       const topic = normalizeText_(getCell_(row, cols.topic));
       const requester = normalizeText_(getCell_(row, cols.requester));
-      const status = normalizeText_(getCell_(row, cols.status));
+      const status = normalizeBookingStatus_(getCell_(row, cols.status));
       const startValue = getCell_(row, cols.start);
       const startDate = new Date(startValue);
       const startStr = isNaN(startDate.getTime()) ? normalizeText_(startValue) : startDate.toLocaleString('th-TH', { dateStyle: 'medium', timeStyle: 'short' });
@@ -2394,8 +2551,9 @@ function getBookingOptionsForMemo(sessionToken) {
       const hasMemoPdf = !!normalizeText_(getCell_(row, cols.memoPdfUrl));
       return {
         bookingId: bookingId,
-        label: `${bookingId} | ${startStr} | ${roomName} | ${topic} | ${requester} | ${status}`,
+        label: `${bookingId} | ${startStr} | ${roomName} | ${topic} | ${requester} | ${getBookingStatusLabel_(status)}`,
         status: status,
+        statusLabel: getBookingStatusLabel_(status),
         roomName: roomName,
         topic: topic,
         requester: requester,
@@ -2843,7 +3001,7 @@ function getApproverConfig_(stepNo, booking) {
 }
 
 function validateApprovalApproverConfig(sessionToken) {
-  const user = requireAdmin_(sessionToken);
+  const user = requireUser_(sessionToken, ['Admin']);
   ensureDatabaseSchema_();
   const rooms = getRoomsData();
   const results = [];
@@ -2917,7 +3075,7 @@ function getBookingRecordObject_(bookingId) {
         headcount: normalizeText_(getCell_(row, cols.headcount)),
         start: getCell_(row, cols.start),
         end: getCell_(row, cols.end),
-        status: normalizeText_(getCell_(row, cols.status)),
+        status: normalizeBookingStatus_(getCell_(row, cols.status)),
         setupDetails: normalizeText_(getCell_(row, cols.setupDetails)),
         layoutUrl: normalizeText_(getCell_(row, cols.layoutUrl)),
         initialMemoPdfUrl: normalizeText_(getCell_(row, cols.memoPdfUrl)),
@@ -3016,7 +3174,7 @@ function resolveApprovalStepConfigs_(booking) {
   return [step1, step2, step3];
 }
 
-function cancelApprovalFlowForBooking_(bookingId, reason, actor) {
+function cancelApprovalFlowForBooking_(bookingId, reason, actor, keepApprovalId) {
   ensureDatabaseSchema_();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const flowSheet = ss.getSheetByName(SHEET_APPROVAL_FLOW);
@@ -3026,26 +3184,68 @@ function cancelApprovalFlowForBooking_(bookingId, reason, actor) {
   const flows = flowSheet.getDataRange().getValues();
   const steps = stepSheet.getDataRange().getValues();
   const safeBookingId = normalizeText_(bookingId);
+  const safeKeepApprovalId = normalizeText_(keepApprovalId || "");
+  const safeReason = sanitizePlainText_(reason || "ยกเลิกการจอง", 1000);
+  let cancelledCount = 0;
+
   for (let i = 1; i < flows.length; i++) {
     const row = flows[i];
-    const status = normalizeText_(getCell_(row, fCols.overallStatus));
-    if (normalizeText_(getCell_(row, fCols.bookingId)) === safeBookingId && !['CANCELLED', 'REJECTED', 'SUPERSEDED'].includes(status)) {
-      const approvalId = normalizeText_(getCell_(row, fCols.approvalId));
-      flowSheet.getRange(i + 1, fCols.overallStatus).setValue('CANCELLED');
-      flowSheet.getRange(i + 1, fCols.updatedAt).setValue(new Date());
-      flowSheet.getRange(i + 1, fCols.reason).setValue(reason);
-      for (let j = 1; j < steps.length; j++) {
-        if (normalizeText_(getCell_(steps[j], sCols.approvalId)) === approvalId && normalizeText_(getCell_(steps[j], sCols.status)) === 'PENDING') {
-          stepSheet.getRange(j + 1, sCols.status).setValue('CANCELLED');
-          stepSheet.getRange(j + 1, sCols.updatedAt).setValue(new Date());
-        }
+    const approvalId = normalizeText_(getCell_(row, fCols.approvalId));
+    const flowBookingId = normalizeText_(getCell_(row, fCols.bookingId));
+    const flowStatus = normalizeText_(getCell_(row, fCols.overallStatus));
+
+    if (flowBookingId !== safeBookingId) continue;
+    if (safeKeepApprovalId && approvalId === safeKeepApprovalId) continue;
+    if (isApprovalFlowTerminalStatus_(flowStatus)) continue;
+
+    flowSheet.getRange(i + 1, fCols.overallStatus).setValue("CANCELLED");
+    flowSheet.getRange(i + 1, fCols.updatedAt).setValue(new Date());
+    flowSheet.getRange(i + 1, fCols.reason).setValue(safeReason);
+
+    for (let j = 1; j < steps.length; j++) {
+      const stepApprovalId = normalizeText_(getCell_(steps[j], sCols.approvalId));
+      const stepStatus = normalizeText_(getCell_(steps[j], sCols.status));
+      if (stepApprovalId === approvalId && isApprovalStepOpenStatus_(stepStatus)) {
+        stepSheet.getRange(j + 1, sCols.status).setValue("CANCELLED");
+        if (sCols.comment) stepSheet.getRange(j + 1, sCols.comment).setValue(safeReason);
+        if (sCols.updatedAt) stepSheet.getRange(j + 1, sCols.updatedAt).setValue(new Date());
       }
-      logApproval_(approvalId, safeBookingId, 'CANCEL_APPROVAL_FLOW', actor || 'System', '', '', reason);
     }
+
+    cancelledCount++;
+    logApproval_(approvalId, safeBookingId, "CANCEL_APPROVAL_FLOW", actor || "System", "", "", safeReason);
   }
+
+  if (cancelledCount === 0) {
+    logApproval_("", safeBookingId, "CANCEL_APPROVAL_FLOW_NO_ACTIVE_FLOW", actor || "System", "", "", safeReason);
+  }
+  return { cancelledCount: cancelledCount };
 }
 
-function supersedeApprovalFlowsForBooking_(bookingId, reason, actor) {
+
+// ใช้รันจาก Apps Script Editor ครั้งเดียวหลัง deploy หากเคยมีรายการ Cancelled ก่อนแก้ไขชุดนี้
+// ฟังก์ชันนี้จะปิด ApprovalFlow/ApprovalSteps ที่ยังเปิดอยู่ของรายการจองที่ถูกยกเลิกแล้ว โดยไม่แตะรายการที่ Completed/Rejected/Superseded
+function repairCancelledBookingApprovalFlows() {
+  ensureDatabaseSchema_();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const bookSheet = ss.getSheetByName(SHEET_BOOKINGS);
+  const cols = getBookingCols_(bookSheet);
+  const rows = bookSheet.getDataRange().getValues();
+  const repaired = [];
+  for (let i = 1; i < rows.length; i++) {
+    const bookingId = normalizeText_(getCell_(rows[i], cols.id));
+    const status = normalizeBookingStatus_(getCell_(rows[i], cols.status));
+    if (!bookingId || status !== BOOKING_STATUS.CANCELLED) continue;
+    const result = cancelApprovalFlowForBooking_(bookingId, "ซ่อมข้อมูล: รายการจองถูกยกเลิกแล้ว", "System Repair");
+    if (result.cancelledCount > 0) {
+      repaired.push({ bookingId: bookingId, cancelledFlows: result.cancelledCount });
+    }
+  }
+  logAction("System Repair", "Repair Cancelled Approval Flows", "จำนวนรายการที่ซ่อม: " + repaired.length);
+  return { repairedCount: repaired.length, repaired: repaired };
+}
+
+function supersedeApprovalFlowsForBooking_(bookingId, reason, actor, keepApprovalId) {
   ensureDatabaseSchema_();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const flowSheet = ss.getSheetByName(SHEET_APPROVAL_FLOW);
@@ -3060,11 +3260,12 @@ function supersedeApprovalFlowsForBooking_(bookingId, reason, actor) {
     const status = normalizeText_(getCell_(row, fCols.overallStatus));
     if (normalizeText_(getCell_(row, fCols.bookingId)) === safeBookingId && !['CANCELLED', 'REJECTED', 'SUPERSEDED'].includes(status)) {
       const approvalId = normalizeText_(getCell_(row, fCols.approvalId));
+      if (keepApprovalId && approvalId === normalizeText_(keepApprovalId)) continue;
       flowSheet.getRange(i + 1, fCols.overallStatus).setValue('SUPERSEDED');
       flowSheet.getRange(i + 1, fCols.updatedAt).setValue(new Date());
       flowSheet.getRange(i + 1, fCols.reason).setValue(reason);
       for (let j = 1; j < steps.length; j++) {
-        if (normalizeText_(getCell_(steps[j], sCols.approvalId)) === approvalId && normalizeText_(getCell_(steps[j], sCols.status)) === 'PENDING') {
+        if (normalizeText_(getCell_(steps[j], sCols.approvalId)) === approvalId && isApprovalStepOpenStatus_(normalizeText_(getCell_(steps[j], sCols.status)))) {
           stepSheet.getRange(j + 1, sCols.status).setValue('SUPERSEDED');
           stepSheet.getRange(j + 1, sCols.updatedAt).setValue(new Date());
         }
@@ -3076,9 +3277,18 @@ function supersedeApprovalFlowsForBooking_(bookingId, reason, actor) {
 
 function startApprovalWorkflowSafely_(bookingId, actor, reason) {
   try {
-    return createApprovalFlowForBooking_(bookingId, actor || 'System', reason || 'AUTO');
+    const result = createApprovalFlowForBooking_(bookingId, actor || 'System', reason || 'AUTO');
+    if (result && result.created) {
+      markBookingPendingApproval_(bookingId, 'เริ่มกระบวนการลงนามเอกสาร: ' + (result.approvalId || ''));
+    }
+    return result;
   } catch (e) {
     logAction('System', 'Approval Workflow Start Error', `Booking ID: ${bookingId} | ${e.message}`);
+    try {
+      markBookingApprovalError_(bookingId, e.message, actor || 'System');
+    } catch (statusErr) {
+      logAction('System', 'Approval Workflow Status Error', `Booking ID: ${bookingId} | ${statusErr.message}`);
+    }
     return { created: false, error: e.message };
   }
 }
@@ -3086,8 +3296,9 @@ function startApprovalWorkflowSafely_(bookingId, actor, reason) {
 function createApprovalFlowForBooking_(bookingId, actor, reason) {
   ensureDatabaseSchema_();
   const booking = getBookingRecordObject_(bookingId);
-  if (booking.status === 'Cancelled') return { created: false, message: 'รายการถูกยกเลิกแล้ว' };
-  supersedeApprovalFlowsForBooking_(bookingId, 'สร้างกระบวนการลงนามใหม่: ' + (reason || ''), actor || 'System');
+  const bookingStatus = normalizeBookingStatus_(booking.status);
+  if (bookingStatus === BOOKING_STATUS.CANCELLED) return { created: false, message: 'รายการถูกยกเลิกแล้ว' };
+  if (bookingStatus === BOOKING_STATUS.REJECTED) return { created: false, message: 'รายการนี้ถูกปฏิเสธแล้ว หากต้องการจองใหม่ควรสร้างรายการใหม่' };
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const flowSheet = ss.getSheetByName(SHEET_APPROVAL_FLOW);
@@ -3095,6 +3306,12 @@ function createApprovalFlowForBooking_(bookingId, actor, reason) {
   const approvalId = createApprovalId_();
   const now = new Date();
   const steps = resolveApprovalStepConfigs_(booking);
+  if (!Array.isArray(steps) || steps.length !== 3) throw new Error('ไม่สามารถกำหนดผู้ลงนามได้ครบ 3 ขั้น');
+  steps.forEach(step => {
+    if (!step.stepNo || !step.stepName || !step.roleKey || !step.name || !isValidEmail_(step.email)) {
+      throw new Error(`ข้อมูลผู้ลงนามขั้นที่ ${step.stepNo || '-'} ไม่ครบถ้วนหรืออีเมลไม่ถูกต้อง`);
+    }
+  });
   const first = steps[0];
 
   flowSheet.appendRow([
@@ -3112,6 +3329,7 @@ function createApprovalFlowForBooking_(bookingId, actor, reason) {
     ]);
   });
 
+  supersedeApprovalFlowsForBooking_(bookingId, 'สร้างกระบวนการลงนามใหม่: ' + (reason || ''), actor || 'System', approvalId);
   logApproval_(approvalId, booking.bookingId, 'CREATE_APPROVAL_FLOW', actor || 'System', '', 1, 'เริ่มกระบวนการลงนามเอกสาร');
   sendApprovalRequestEmail_(approvalId, 1);
   return { created: true, approvalId: approvalId, currentStep: 1 };
@@ -3177,20 +3395,35 @@ function getApprovalDetailsByToken(token) {
   const approvalId = normalizeText_(getCell_(step.row, sCols.approvalId));
   const flow = findApprovalFlowById_(approvalId);
   const fCols = flow.cols;
-  const bookingId = normalizeText_(getCell_(flow.row, fCols.bookingId));
+  const flowBookingId = normalizeText_(getCell_(flow.row, fCols.bookingId));
+  const stepBookingId = normalizeText_(getCell_(step.row, sCols.bookingId));
+  const bookingId = flowBookingId || stepBookingId;
   const booking = getBookingRecordObject_(bookingId);
   const status = normalizeText_(getCell_(step.row, sCols.status));
   const expireAt = new Date(getCell_(step.row, sCols.tokenExpireAt));
   const flowStatus = normalizeText_(getCell_(flow.row, fCols.overallStatus));
   let available = true;
   let message = '';
-  if (flowStatus !== 'PENDING_ROOM_OFFICER' && flowStatus !== 'PENDING_BUILDING_GROUP' && flowStatus !== 'PENDING_DEPUTY_DIRECTOR') {
+
+  if (stepBookingId && flowBookingId && stepBookingId !== flowBookingId) {
+    available = false;
+    message = 'ข้อมูลลิงก์ลงนามไม่สอดคล้องกับรายการจอง กรุณาติดต่อผู้ดูแลระบบ';
+  } else {
+    try {
+      assertBookingCanBeApproved_(bookingId);
+    } catch (e) {
+      available = false;
+      message = e.message;
+    }
+  }
+
+  if (available && !isApprovalFlowPendingStatus_(flowStatus)) {
     available = false;
     message = 'เอกสารนี้ไม่ได้อยู่ระหว่างรอลงนามแล้ว สถานะปัจจุบัน: ' + flowStatus;
-  } else if (status !== 'PENDING') {
+  } else if (available && status !== 'PENDING') {
     available = false;
     message = 'ขั้นตอนนี้ไม่อยู่ในสถานะรอลงนามแล้ว สถานะปัจจุบัน: ' + status;
-  } else if (isNaN(expireAt.getTime()) || expireAt < new Date()) {
+  } else if (available && (isNaN(expireAt.getTime()) || expireAt < new Date())) {
     available = false;
     message = 'ลิงก์ลงนามหมดอายุแล้ว กรุณาติดต่อผู้ดูแลระบบให้ส่งลิงก์ใหม่';
   }
@@ -3210,6 +3443,8 @@ function getApprovalDetailsByToken(token) {
     requester: booking.requester,
     requesterEmail: booking.requesterEmail,
     headcount: booking.headcount,
+    bookingStatus: booking.status,
+    bookingStatusLabel: getBookingStatusLabel_(booking.status),
     startStr: new Date(booking.start).toLocaleString('th-TH', { year:'numeric', month:'long', day:'numeric', hour:'2-digit', minute:'2-digit', timeZone:'Asia/Bangkok' }),
     endStr: new Date(booking.end).toLocaleString('th-TH', { year:'numeric', month:'long', day:'numeric', hour:'2-digit', minute:'2-digit', timeZone:'Asia/Bangkok' }),
     initialMemoPdfUrl: booking.initialMemoPdfUrl,
@@ -3252,10 +3487,23 @@ function submitApprovalSignature(formObject) {
     const step = findApprovalStepByToken_(token);
     const sCols = step.cols;
     const approvalId = normalizeText_(getCell_(step.row, sCols.approvalId));
-    const bookingId = normalizeText_(getCell_(step.row, sCols.bookingId));
+    const stepBookingId = normalizeText_(getCell_(step.row, sCols.bookingId));
     const stepNo = parseInt(getCell_(step.row, sCols.stepNo), 10);
     const status = normalizeText_(getCell_(step.row, sCols.status));
     const expireAt = new Date(getCell_(step.row, sCols.tokenExpireAt));
+    const flow = findApprovalFlowById_(approvalId);
+    const fCols = flow.cols;
+    const flowBookingId = normalizeText_(getCell_(flow.row, fCols.bookingId));
+    const bookingId = flowBookingId || stepBookingId;
+    const flowStatus = normalizeText_(getCell_(flow.row, fCols.overallStatus));
+
+    if (stepBookingId && flowBookingId && stepBookingId !== flowBookingId) {
+      throw new Error('ข้อมูลลิงก์ลงนามไม่สอดคล้องกับรายการจอง กรุณาติดต่อผู้ดูแลระบบ');
+    }
+    assertBookingCanBeApproved_(bookingId);
+    if (!isApprovalFlowPendingStatus_(flowStatus)) {
+      throw new Error('เอกสารนี้ไม่ได้อยู่ระหว่างรอลงนามแล้ว สถานะปัจจุบัน: ' + flowStatus);
+    }
     if (status !== 'PENDING') throw new Error('ขั้นตอนนี้ไม่อยู่ในสถานะรอลงนามแล้ว');
     if (isNaN(expireAt.getTime()) || expireAt < new Date()) throw new Error('ลิงก์ลงนามหมดอายุแล้ว');
 
@@ -3297,11 +3545,21 @@ function rejectApprovalFlow_(approvalId, bookingId, stepNo, reason, actorName, a
   flow.sheet.getRange(flow.rowNo, c.overallStatus).setValue('REJECTED');
   flow.sheet.getRange(flow.rowNo, c.updatedAt).setValue(new Date());
   flow.sheet.getRange(flow.rowNo, c.reason).setValue(reason);
+  try { markBookingRejected_(bookingId, reason); } catch (e) { logAction('System', 'Booking Reject Status Error', `Booking ID: ${bookingId} | ${e.message}`); }
   logApproval_(approvalId, bookingId, 'REJECT_APPROVAL_FLOW', actorName, actorEmail, stepNo, reason);
   sendApprovalRejectedEmail_(approvalId, reason);
 }
 
 function advanceApprovalStep_(approvalId, completedStepNo, actorName, actorEmail) {
+  const currentFlow = findApprovalFlowById_(approvalId);
+  const currentFlowCols = currentFlow.cols;
+  const currentBookingId = normalizeText_(getCell_(currentFlow.row, currentFlowCols.bookingId));
+  assertBookingCanBeApproved_(currentBookingId);
+  const currentFlowStatus = normalizeText_(getCell_(currentFlow.row, currentFlowCols.overallStatus));
+  if (!isApprovalFlowPendingStatus_(currentFlowStatus)) {
+    throw new Error('เอกสารนี้ไม่ได้อยู่ระหว่างรอลงนามแล้ว สถานะปัจจุบัน: ' + currentFlowStatus);
+  }
+
   const nextStep = completedStepNo + 1;
   if (nextStep <= 3) {
     const flow = findApprovalFlowById_(approvalId);
@@ -3580,7 +3838,9 @@ function finalizeApprovalFlow_(approvalId, actorName, actorEmail) {
   flow.sheet.getRange(flow.rowNo, c.finalSignedPdfFileId).setValue(result.fileId);
   flow.sheet.getRange(flow.rowNo, c.completedAt).setValue(new Date());
   flow.sheet.getRange(flow.rowNo, c.updatedAt).setValue(new Date());
-  logApproval_(approvalId, normalizeText_(getCell_(flow.row, c.bookingId)), 'GENERATE_FINAL_PDF', actorName || 'System', actorEmail || '', 3, result.url);
+  const bookingId = normalizeText_(getCell_(flow.row, c.bookingId));
+  try { markBookingApproved_(bookingId, 'ลงนามเอกสารครบทุกขั้นแล้ว | Final PDF: ' + result.url); } catch (e) { logAction('System', 'Booking Approved Status Error', `Booking ID: ${bookingId} | ${e.message}`); }
+  logApproval_(approvalId, bookingId, 'GENERATE_FINAL_PDF', actorName || 'System', actorEmail || '', 3, result.url);
   sendApprovalCompletedEmail_(approvalId, result.url);
   return result;
 }
@@ -3595,7 +3855,7 @@ function sendApprovalCompletedEmail_(approvalId, finalPdfUrl) {
   const roomName = normalizeText_(getCell_(flow.row, c.roomName));
   const requester = normalizeText_(getCell_(flow.row, c.requester));
   const content = `
-    <p style="font-size:16px; color:#333; line-height:1.7;">เรียนคุณ ${escapeHtml_(requester)},<br>เอกสารบันทึกข้อความขอใช้ห้องประชุมของท่านผ่านการลงนามครบถ้วนแล้ว</p>
+    <p style="font-size:16px; color:#333; line-height:1.7;">เรียน ${escapeHtml_(requester)},<br>เอกสารบันทึกข้อความขอใช้ห้องประชุมของท่านผ่านการลงนามครบถ้วนแล้ว</p>
     <table style="width:100%; border-collapse:collapse; font-size:14px;">
       <tr><td style="padding:8px; color:#666; width:30%;">รหัสการจอง:</td><td style="padding:8px; font-weight:bold;">${escapeHtml_(bookingId)}</td></tr>
       <tr><td style="padding:8px; color:#666;">หัวข้อ:</td><td style="padding:8px;">${escapeHtml_(topic)}</td></tr>
@@ -3670,7 +3930,9 @@ function resendCurrentApprovalLinkByAdmin(approvalId, sessionToken) {
 
 function adminCreateApprovalFlowForBooking(bookingId, sessionToken) {
   const user = requireUser_(sessionToken, ['Admin']);
-  return createApprovalFlowForBooking_(bookingId, formatUserForLog_(user), 'ADMIN_CREATE_OR_RESET');
+  const result = startApprovalWorkflowSafely_(bookingId, formatUserForLog_(user), 'ADMIN_CREATE_OR_RESET');
+  if (!result.created) throw new Error(result.error || result.message || 'สร้างกระบวนการลงนามใหม่ไม่สำเร็จ');
+  return result;
 }
 
 function testAuth() {

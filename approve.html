@@ -7,7 +7,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css">
   <style>
-    body{font-family:'Prompt',sans-serif;background:#f4f7fb;padding-bottom:40px}.hero{background:linear-gradient(135deg,#0d6efd,#6610f2);color:white;padding:28px 16px;text-align:center;border-radius:0 0 26px 26px}.main-card{max-width:900px;margin:-20px auto 0;border:0;border-radius:18px;box-shadow:0 14px 40px rgba(20,30,70,.12)}#sigCanvas{width:100%;height:190px;border:1px solid #ced4da;border-radius:12px;background:white;touch-action:none;cursor:crosshair}.step-pill{display:inline-block;padding:4px 10px;border-radius:999px;background:#eef2ff;margin:3px;font-size:.84rem}.signature-preview{max-height:150px;border:1px solid #dee2e6;border-radius:10px;padding:6px;background:#fff}
+    body{font-family:'Prompt',sans-serif;background:#f4f7fb;padding-bottom:40px}.hero{background:linear-gradient(135deg,#0d6efd,#6610f2);color:white;padding:28px 16px;text-align:center;border-radius:0 0 26px 26px}.main-card{max-width:900px;margin:-20px auto 0;border:0;border-radius:18px;box-shadow:0 14px 40px rgba(20,30,70,.12)}#sigCanvas{width:100%;height:190px;border:1px solid #ced4da;border-radius:12px;background:white;touch-action:none;cursor:crosshair}.step-pill{display:inline-block;padding:4px 10px;border-radius:999px;background:#eef2ff;margin:3px;font-size:.84rem}.critical-info{background:#fff7e6;border:1px solid #ffd591;border-radius:12px;padding:12px 14px;margin-top:12px}.signature-preview{max-height:150px;border:1px solid #dee2e6;border-radius:10px;padding:6px;background:#fff}
   </style>
 </head>
 <body>
@@ -27,8 +27,17 @@
           </div>
           <hr>
           <h5 id="topic" class="fw-bold"></h5>
-          <div class="row small text-muted mt-2">
-            <div class="col-md-6">รหัสการจอง: <span id="bookingId"></span></div>
+          <div class="critical-info">
+            <div class="fw-bold text-warning-emphasis"><i class="bi bi-calendar-check"></i> โปรดตรวจสอบรายการก่อนลงนาม</div>
+            <div class="row small mt-2">
+              <div class="col-md-6"><b>วันที่ใช้ห้อง:</b> <span id="useDateStr" class="text-primary fw-bold"></span></div>
+              <div class="col-md-6"><b>เวลาใช้ห้อง:</b> <span id="useTimeStr" class="text-primary fw-bold"></span></div>
+              <div class="col-md-6"><b>รหัสอนุมัติ:</b> <span id="approvalId"></span></div>
+              <div class="col-md-6"><b>รหัสการจอง:</b> <span id="bookingId"></span></div>
+            </div>
+            <div id="duplicateWarningBox" class="alert alert-warning mt-2 mb-0 py-2 small" style="display:none;"></div>
+          </div>
+          <div class="row small text-muted mt-3">
             <div class="col-md-6">ห้อง: <span id="roomName"></span></div>
             <div class="col-md-6">ผู้จอง: <span id="requester"></span></div>
             <div class="col-md-6">จำนวน: <span id="headcount"></span> คน</div>
@@ -61,7 +70,35 @@
     let isDrawing = false;
     document.addEventListener('DOMContentLoaded', () => { initCanvas(); loadApprovalDetails(); });
     function escapeHtml(v){return String(v??'').replace(/[&<>'"]/g,s=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[s]));}
-    function loadApprovalDetails(){ if(!approvalToken){showError('ไม่พบ token สำหรับลงนาม');return;} google.script.run.withSuccessHandler(d=>{document.getElementById('loading').style.display='none'; if(!d.available){showError(d.message);return;} document.getElementById('mainBox').style.display='block'; document.getElementById('stepNo').innerText=d.stepNo; document.getElementById('stepName').innerText=d.stepName; document.getElementById('topic').innerText=d.topic; document.getElementById('bookingId').innerText=d.bookingId; document.getElementById('roomName').innerText=d.roomName; document.getElementById('requester').innerText=d.requester; document.getElementById('headcount').innerText=d.headcount; document.getElementById('startStr').innerText=d.startStr; document.getElementById('endStr').innerText=d.endStr; document.getElementById('signerName').value=d.approverName||''; document.getElementById('signerEmail').value=(d.approverEmail||'').split(',')[0]||''; if(d.initialMemoPdfUrl){document.getElementById('memoLink').href=d.initialMemoPdfUrl;} document.getElementById('stepStatus').innerHTML=(d.steps||[]).map(s=>`<span class="step-pill">${s.stepNo}. ${escapeHtml(s.stepName)}: <b>${escapeHtml(s.status)}</b></span>`).join(''); }).withFailureHandler(e=>showError(e.message)).getApprovalDetailsByToken(approvalToken);}
+    function loadApprovalDetails(){
+      if(!approvalToken){showError('ไม่พบ token สำหรับลงนาม');return;}
+      google.script.run.withSuccessHandler(d=>{
+        document.getElementById('loading').style.display='none';
+        if(!d.available){showError(d.message);return;}
+        document.getElementById('mainBox').style.display='block';
+        document.getElementById('stepNo').innerText=d.stepNo;
+        document.getElementById('stepName').innerText=d.stepName;
+        document.getElementById('topic').innerText=d.topic;
+        document.getElementById('approvalId').innerText=d.approvalId||'-';
+        document.getElementById('bookingId').innerText=d.bookingId;
+        document.getElementById('useDateStr').innerText=d.useDateStr||'-';
+        document.getElementById('useTimeStr').innerText=d.useTimeStr||'-';
+        document.getElementById('roomName').innerText=d.roomName;
+        document.getElementById('requester').innerText=d.requester;
+        document.getElementById('headcount').innerText=d.headcount;
+        document.getElementById('startStr').innerText=d.startStr;
+        document.getElementById('endStr').innerText=d.endStr;
+        document.getElementById('signerName').value=d.approverName||'';
+        document.getElementById('signerEmail').value=(d.approverEmail||'').split(',')[0]||'';
+        if(d.initialMemoPdfUrl){document.getElementById('memoLink').href=d.initialMemoPdfUrl;}
+        if(d.duplicateWarning){
+          const box=document.getElementById('duplicateWarningBox');
+          box.style.display='block';
+          box.innerHTML=`<b>หมายเหตุ:</b> ${escapeHtml(d.duplicateWarning)} กรุณาตรวจสอบวันที่ใช้ห้องและรหัสการจองก่อนลงนาม`;
+        }
+        document.getElementById('stepStatus').innerHTML=(d.steps||[]).map(s=>`<span class="step-pill">${s.stepNo}. ${escapeHtml(s.stepName)}: <b>${escapeHtml(s.status)}</b>${s.signedAt?`<br><span class="small text-muted">${escapeHtml(s.signedAt)}</span>`:''}</span>`).join('');
+      }).withFailureHandler(e=>showError(e.message)).getApprovalDetailsByToken(approvalToken);
+    }
     function showError(msg){document.getElementById('loading').style.display='none';document.getElementById('mainBox').style.display='none';document.getElementById('errorBox').style.display='block';document.getElementById('errorText').innerText=msg||'เกิดข้อผิดพลาด';}
     function initCanvas(){const c=document.getElementById('sigCanvas');const ctx=c.getContext('2d');function pos(e){const r=c.getBoundingClientRect();const x=(e.clientX||(e.touches&&e.touches[0].clientX))-r.left;const y=(e.clientY||(e.touches&&e.touches[0].clientY))-r.top;return {x:x*c.width/r.width,y:y*c.height/r.height};}function start(e){isDrawing=true;const p=pos(e);ctx.beginPath();ctx.moveTo(p.x,p.y);e.preventDefault();}function draw(e){if(!isDrawing)return;const p=pos(e);ctx.lineWidth=3;ctx.lineCap='round';ctx.strokeStyle='#0b2e59';ctx.lineTo(p.x,p.y);ctx.stroke();e.preventDefault();}function end(){isDrawing=false;}c.addEventListener('mousedown',start);c.addEventListener('mousemove',draw);c.addEventListener('mouseup',end);c.addEventListener('mouseleave',end);c.addEventListener('touchstart',start,{passive:false});c.addEventListener('touchmove',draw,{passive:false});c.addEventListener('touchend',end);} 
     function clearSignature(){const c=document.getElementById('sigCanvas');c.getContext('2d').clearRect(0,0,c.width,c.height);fileSignatureBase64='';document.getElementById('signatureFile').value='';document.getElementById('signatureFilePreview').innerHTML='';}

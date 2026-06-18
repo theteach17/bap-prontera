@@ -23,7 +23,7 @@ const SHEET_APPROVAL_STEPS = "ApprovalSteps";
 const SHEET_APPROVAL_LOGS = "ApprovalLogs";
 const SHEET_APPROVERS = "Approvers";
 const FINAL_SIGNED_MEMO_FOLDER_ID = "1p4G76-WMN4ymui-h-apVyAghZIS2MOaB";
-const APPROVAL_TOKEN_TTL_DAYS = 7;
+const APPROVAL_TOKEN_TTL_DAYS = 15;
 const APPROVAL_STEP_HEADERS = [
   "Approval ID", "Booking ID", "Step No", "Step Name", "Approver Role", "Approver Name",
   "Approver Email", "Status", "Sign Method", "Signature File ID", "Signature Image URL",
@@ -225,6 +225,212 @@ function assertBookingCanBeApproved_(bookingId) {
     throw new Error("รายการจองนี้ถูกไม่อนุมัติ/ถูกส่งกลับแล้ว ไม่สามารถลงนามเอกสารได้");
   }
   return status;
+}
+
+
+// --- Approval Sequence / Date / Duplicate Helpers ---
+// ใช้ตรวจซ้ำทั้งก่อนเปิดหน้าลงนาม ก่อน submit และก่อนสร้าง Final PDF เพื่อป้องกันการลัดลำดับจากข้อมูลที่ถูกแก้ด้วยมือหรือข้อมูลค้าง
+function getApprovalStepByNoFromList_(steps, stepNo) {
+  return (steps || []).find(s => parseInt(s.stepNo, 10) === parseInt(stepNo, 10)) || null;
+}
+
+function assertApprovalStepSequence_(approvalId, stepNo) {
+  const safeApprovalId = normalizeText_(approvalId);
+  const currentStepNo = parseInt(stepNo, 10);
+  if (![1, 2, 3].includes(currentStepNo)) {
+    throw new Error('ลำดับขั้นลงนามไม่ถูกต้อง: ' + stepNo);
+  }
+
+  const steps = getApprovalStepsForApproval_(safeApprovalId);
+  if (steps.length !== 3) {
+    throw new Error('ข้อมูลขั้นตอนลงนามไม่ครบ 3 ขั้น กรุณาให้ผู้ดูแลระบบตรวจสอบ');
+  }
+
+  const current = getApprovalStepByNoFromList_(steps, currentStepNo);
+  if (!current) throw new Error('ไม่พบขั้นตอนลงนามที่ ' + currentStepNo);
+  if (normalizeText_(current.status) !== 'PENDING') {
+    throw new Error('ขั้นตอนนี้ไม่อยู่ในสถานะรอลงนามแล้ว สถานะปัจจุบัน: ' + normalizeText_(current.status));
+  }
+
+  for (let n = 1; n < currentStepNo; n++) {
+    const previous = getApprovalStepByNoFromList_(steps, n);
+    if (!previous || normalizeText_(previous.status) !== 'SIGNED') {
+      throw new Error('ยังไม่สามารถลงนามขั้นตอนนี้ได้ เนื่องจากขั้นตอนที่ ' + n + ' ยังลงนามไม่สมบูรณ์');
+    }
+    const previousSignedAt = new Date(previous.signedAt);
+    if (!previous.signedAt || isNaN(previousSignedAt.getTime())) {
+      throw new Error('ข้อมูลวันเวลาลงนามของขั้นตอนที่ ' + n + ' ไม่สมบูรณ์');
+    }
+  }
+
+  for (let n = currentStepNo + 1; n <= 3; n++) {
+    const later = getApprovalStepByNoFromList_(steps, n);
+    if (!later) throw new Error('ไม่พบขั้นตอนลงนามที่ ' + n);
+    const laterStatus = normalizeText_(later.status);
+    if (!['WAITING', 'CANCELLED', 'SUPERSEDED'].includes(laterStatus)) {
+      throw new Error('พบสถานะขั้นตอนถัดไปไม่สอดคล้องกับลำดับลงนาม: ขั้นตอนที่ ' + n + ' = ' + laterStatus);
+    }
+  }
+
+  return true;
+}
+
+function assertSignedSequenceUpTo_(approvalId, completedStepNo) {
+  const safeApprovalId = normalizeText_(approvalId);
+  const targetStepNo = parseInt(completedStepNo, 10);
+  const steps = getApprovalStepsForApproval_(safeApprovalId);
+  for (let n = 1; n <= targetStepNo; n++) {
+    const step = getApprovalStepByNoFromList_(steps, n);
+    if (!step || normalizeText_(step.status) !== 'SIGNED') {
+      throw new Error('ไม่สามารถส่งต่อเอกสารได้ เนื่องจากขั้นตอนที่ ' + n + ' ยังลงนามไม่สมบูรณ์');
+    }
+    const signedAt = new Date(step.signedAt);
+    if (!step.signedAt || isNaN(signedAt.getTime())) {
+      throw new Error('ข้อมูลวันเวลาลงนามของขั้นตอนที่ ' + n + ' ไม่สมบูรณ์');
+    }
+  }
+  return true;
+}
+
+function validateApprovalCompletionSequence_(approvalId) {
+  const safeApprovalId = normalizeText_(approvalId);
+  const steps = getApprovalStepsForApproval_(safeApprovalId);
+  if (steps.length !== 3) {
+    throw new Error('ไม่สามารถสร้าง PDF ฉบับสมบูรณ์ได้ เนื่องจากข้อมูลขั้นตอนลงนามไม่ครบ 3 ขั้น');
+  }
+
+  let previousTime = null;
+  for (let n = 1; n <= 3; n++) {
+    const step = getApprovalStepByNoFromList_(steps, n);
+    if (!step || normalizeText_(step.status) !== 'SIGNED') {
+      throw new Error('ไม่สามารถสร้าง PDF ฉบับสมบูรณ์ได้ เนื่องจากขั้นตอนที่ ' + n + ' ยังไม่ได้ลงนามครบถ้วน');
+    }
+    const signedAt = new Date(step.signedAt);
+    if (!step.signedAt || isNaN(signedAt.getTime())) {
+      throw new Error('ไม่สามารถสร้าง PDF ฉบับสมบูรณ์ได้ เนื่องจากวันเวลาลงนามของขั้นตอนที่ ' + n + ' ไม่ถูกต้อง');
+    }
+    if (previousTime && signedAt.getTime() < previousTime.getTime()) {
+      throw new Error('ไม่สามารถสร้าง PDF ฉบับสมบูรณ์ได้ เนื่องจากเวลาลงนามของขั้นตอนที่ ' + n + ' ย้อนกลับก่อนขั้นตอนก่อนหน้า');
+    }
+    previousTime = signedAt;
+  }
+  return true;
+}
+
+function formatThaiDateOnly_(value, fallback) {
+  const d = new Date(value || fallback || new Date());
+  if (isNaN(d.getTime())) return '-';
+  return toThaiDateString(d);
+}
+
+function formatThaiTimeOnly_(value) {
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return '-';
+  return Utilities.formatDate(d, Session.getScriptTimeZone() || 'Asia/Bangkok', 'HH:mm') + ' น.';
+}
+
+function getBookingUseDateText_(booking) {
+  return formatThaiDateOnly_(booking && booking.start);
+}
+
+function getBookingUseTimeText_(booking) {
+  return formatThaiTimeOnly_(booking && booking.start) + ' - ' + formatThaiTimeOnly_(booking && booking.end);
+}
+
+function getBookingUseDateTimeText_(booking) {
+  return getBookingUseDateText_(booking) + ' เวลา ' + getBookingUseTimeText_(booking);
+}
+
+function getSimilarActiveBookings_(params) {
+  ensureDatabaseSchema_();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEET_BOOKINGS);
+  const cols = getBookingCols_(sheet);
+  const rows = sheet.getDataRange().getValues();
+  const safeBookingId = normalizeText_(params && params.bookingId);
+  const safeTopic = normalizeText_(params && params.topic).toLowerCase();
+  const safeRoomId = normalizeText_(params && params.roomId);
+  const safeRequester = normalizeText_(params && params.requester).toLowerCase();
+  const safeRequesterEmail = normalizeText_(params && params.requesterEmail).toLowerCase();
+  const matches = [];
+
+  if (!safeTopic || !safeRoomId || (!safeRequester && !safeRequesterEmail)) return matches;
+
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    const bookingId = normalizeText_(getCell_(row, cols.id));
+    if (!bookingId || bookingId === safeBookingId) continue;
+    const status = normalizeBookingStatus_(getCell_(row, cols.status));
+    if (!isBookingBlockingRoom_(status)) continue;
+    const topic = normalizeText_(getCell_(row, cols.topic)).toLowerCase();
+    const roomId = normalizeText_(getCell_(row, cols.roomId));
+    const requester = normalizeText_(getCell_(row, cols.requester)).toLowerCase();
+    const requesterEmail = normalizeText_(getCell_(row, cols.requesterEmail)).toLowerCase();
+    const sameRequester = safeRequesterEmail ? requesterEmail === safeRequesterEmail : requester === safeRequester;
+    if (topic === safeTopic && roomId === safeRoomId && sameRequester) {
+      const booking = buildBookingObjectFromRow_(row, cols);
+      matches.push({
+        bookingId: bookingId,
+        topic: normalizeText_(getCell_(row, cols.topic)),
+        roomName: normalizeText_(getCell_(row, cols.roomName)),
+        requester: normalizeText_(getCell_(row, cols.requester)),
+        start: getCell_(row, cols.start),
+        end: getCell_(row, cols.end),
+        useDateTime: getBookingUseDateTimeText_(booking),
+        status: status,
+        statusLabel: getBookingStatusLabel_(status)
+      });
+    }
+  }
+  return matches.sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()).slice(0, 10);
+}
+
+function getSimilarBookingWarningForForm(formObject) {
+  const matches = getSimilarActiveBookings_(formObject || {});
+  if (matches.length === 0) return { hasSimilar: false, matches: [], message: '' };
+  const message = 'พบรายการจองที่มีหัวข้อ ผู้จอง และห้องเดียวกันอยู่แล้ว ' + matches.length + ' รายการ กรุณาตรวจสอบว่าเป็นการจองเพิ่มอีกวันจริง ไม่ใช่การส่งซ้ำโดยไม่ตั้งใจ';
+  return { hasSimilar: true, matches: matches, message: message };
+}
+
+function repairBookingApprovalStatusConsistency() {
+  ensureDatabaseSchema_();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const bookSheet = ss.getSheetByName(SHEET_BOOKINGS);
+  const flowSheet = ss.getSheetByName(SHEET_APPROVAL_FLOW);
+  const bCols = getBookingCols_(bookSheet);
+  const fCols = getApprovalFlowCols_(flowSheet);
+  const bookings = bookSheet.getDataRange().getValues();
+  const flows = flowSheet.getDataRange().getValues().slice(1).filter(row => normalizeText_(getCell_(row, fCols.approvalId)));
+  const repaired = [];
+
+  for (let i = 1; i < bookings.length; i++) {
+    const row = bookings[i];
+    const bookingId = normalizeText_(getCell_(row, bCols.id));
+    if (!bookingId) continue;
+    const currentStatus = normalizeBookingStatus_(getCell_(row, bCols.status));
+    if ([BOOKING_STATUS.CANCELLED, BOOKING_STATUS.REJECTED].includes(currentStatus)) continue;
+
+    const related = flows
+      .filter(flow => normalizeText_(getCell_(flow, fCols.bookingId)) === bookingId)
+      .filter(flow => normalizeText_(getCell_(flow, fCols.overallStatus)) !== 'SUPERSEDED')
+      .sort((a, b) => new Date(getCell_(b, fCols.createdAt)).getTime() - new Date(getCell_(a, fCols.createdAt)).getTime());
+
+    if (related.length === 0) continue;
+    const latest = related[0];
+    const flowStatus = normalizeText_(getCell_(latest, fCols.overallStatus));
+    let targetStatus = currentStatus;
+    if (flowStatus === 'COMPLETED') targetStatus = BOOKING_STATUS.APPROVED;
+    else if (isApprovalFlowPendingStatus_(flowStatus)) targetStatus = BOOKING_STATUS.PENDING_APPROVAL;
+    else if (flowStatus === 'REJECTED') targetStatus = BOOKING_STATUS.REJECTED;
+    else if (flowStatus === 'CANCELLED') targetStatus = BOOKING_STATUS.CANCELLED;
+
+    if (targetStatus !== currentStatus) {
+      setBookingStatusByRow_(bookSheet, bCols, i + 1, targetStatus, 'ซ่อมสถานะให้สอดคล้องกับ ApprovalFlow: ' + flowStatus);
+      repaired.push({ bookingId: bookingId, from: currentStatus, to: targetStatus, flowStatus: flowStatus });
+    }
+  }
+  logAction('System Repair', 'Repair Booking Approval Status Consistency', 'จำนวนรายการที่ซ่อม: ' + repaired.length);
+  return { repairedCount: repaired.length, repaired: repaired };
 }
 
 // --- Helper: Safe Text / HTML / Email ---
@@ -537,6 +743,7 @@ function getCell_(row, colNumber) {
 function buildBookingObjectFromRow_(row, cols) {
   return {
     bookingId: normalizeText_(getCell_(row, cols.id)),
+    timestamp: getCell_(row, cols.timestamp),
     roomId: normalizeText_(getCell_(row, cols.roomId)),
     roomName: normalizeText_(getCell_(row, cols.roomName)),
     topic: normalizeText_(getCell_(row, cols.topic)),
@@ -931,8 +1138,8 @@ function createEmailTemplate(data, type, officerName = '') {
   if (type === 'user') {
     headerText = isUpdate ? 'แจ้งเตือนการแก้ไขการจอง' : 'ยืนยันการจองห้องประชุม';
     subText = isUpdate ?
-       `เรียน ${safe.requester},<br>รายการจองของคุณได้ถูก <strong>แก้ไข</strong> เรียบร้อยแล้ว รายละเอียดล่าสุดดังนี้:` :
-       `เรียน ${safe.requester},<br>การจองของคุณได้รับการยืนยันเรียบร้อยแล้ว รายละเอียดดังนี้:`;
+       `เรียนคุณ ${safe.requester},<br>รายการจองของคุณได้ถูก <strong>แก้ไข</strong> เรียบร้อยแล้ว รายละเอียดล่าสุดดังนี้:` :
+       `เรียนคุณ ${safe.requester},<br>การจองของคุณได้รับการยืนยันเรียบร้อยแล้ว รายละเอียดดังนี้:`;
   } else if (type === 'admin') {
     headerText = isUpdate ? 'เอกสารบันทึกข้อความกรณีแก้ไขการจอง' : 'เอกสารบันทึกข้อความการจองห้องประชุมใหม่';
     subText = isUpdate ?
@@ -941,8 +1148,8 @@ function createEmailTemplate(data, type, officerName = '') {
   } else {
     headerText = isUpdate ? 'แจ้งเตือนการแก้ไขข้อมูลการจอง' : 'แจ้งเตือนการจองห้องประชุมใหม่';
     subText = isUpdate ?
-      `เรียน ${escapeHtml_(officerName)},<br>มีการ <strong>แก้ไข</strong> รายการจองห้องประชุมภายใต้การดูแลของคุณ รายละเอียดล่าสุดดังนี้:` :
-      `เรียน ${escapeHtml_(officerName)},<br>มีการจองห้องประชุมภายใต้การดูแลของคุณ รายละเอียดดังนี้:`;
+      `เรียนคุณ ${escapeHtml_(officerName)},<br>มีการ <strong>แก้ไข</strong> รายการจองห้องประชุมภายใต้การดูแลของคุณ รายละเอียดล่าสุดดังนี้:` :
+      `เรียนคุณ ${escapeHtml_(officerName)},<br>มีการจองห้องประชุมภายใต้การดูแลของคุณ รายละเอียดดังนี้:`;
   }
 
   const shouldShowMemoLink = type === 'admin' && data.memoPdfUrl;
@@ -2358,7 +2565,7 @@ function buildCancellationEmailHtml_(data, recipientType) {
   };
 
   const intro = recipientType === 'user'
-    ? `เรียน ${safe.requester},<br>รายการจองห้องประชุมของท่านถูกยกเลิกแล้ว รายละเอียดดังนี้:`
+    ? `เรียนคุณ ${safe.requester},<br>รายการจองห้องประชุมของท่านถูกยกเลิกแล้ว รายละเอียดดังนี้:`
     : `เรียนเจ้าหน้าที่ผู้รับผิดชอบห้องประชุม,<br>มีรายการจองห้องประชุมภายใต้การดูแลของท่านถูกยกเลิกแล้ว รายละเอียดดังนี้:`;
 
   const contentHtml = `
@@ -3067,6 +3274,7 @@ function getBookingRecordObject_(bookingId) {
       return {
         rowNo: i + 1,
         bookingId: safeId,
+        timestamp: getCell_(row, cols.timestamp),
         roomId: normalizeText_(getCell_(row, cols.roomId)),
         roomName: normalizeText_(getCell_(row, cols.roomName)),
         topic: normalizeText_(getCell_(row, cols.topic)),
@@ -3400,6 +3608,7 @@ function getApprovalDetailsByToken(token) {
   const bookingId = flowBookingId || stepBookingId;
   const booking = getBookingRecordObject_(bookingId);
   const status = normalizeText_(getCell_(step.row, sCols.status));
+  const stepNo = parseInt(getCell_(step.row, sCols.stepNo), 10);
   const expireAt = new Date(getCell_(step.row, sCols.tokenExpireAt));
   const flowStatus = normalizeText_(getCell_(flow.row, fCols.overallStatus));
   let available = true;
@@ -3426,7 +3635,22 @@ function getApprovalDetailsByToken(token) {
   } else if (available && (isNaN(expireAt.getTime()) || expireAt < new Date())) {
     available = false;
     message = 'ลิงก์ลงนามหมดอายุแล้ว กรุณาติดต่อผู้ดูแลระบบให้ส่งลิงก์ใหม่';
+  } else if (available) {
+    try {
+      assertApprovalStepSequence_(approvalId, stepNo);
+    } catch (e) {
+      available = false;
+      message = e.message;
+    }
   }
+
+  const similarInfo = getSimilarBookingWarningForForm({
+    bookingId: bookingId,
+    topic: booking.topic,
+    requester: booking.requester,
+    requesterEmail: booking.requesterEmail,
+    roomId: booking.roomId
+  });
 
   return {
     available: available,
@@ -3434,7 +3658,11 @@ function getApprovalDetailsByToken(token) {
     token: normalizeText_(token),
     approvalId: approvalId,
     bookingId: bookingId,
-    stepNo: parseInt(getCell_(step.row, sCols.stepNo), 10),
+    useDateStr: getBookingUseDateText_(booking),
+    useTimeStr: getBookingUseTimeText_(booking),
+    duplicateWarning: similarInfo.hasSimilar ? similarInfo.message : '',
+    duplicateMatches: similarInfo.matches || [],
+    stepNo: stepNo,
     stepName: normalizeText_(getCell_(step.row, sCols.stepName)),
     approverName: normalizeText_(getCell_(step.row, sCols.approverName)),
     approverEmail: normalizeText_(getCell_(step.row, sCols.approverEmail)),
@@ -3506,6 +3734,7 @@ function submitApprovalSignature(formObject) {
     }
     if (status !== 'PENDING') throw new Error('ขั้นตอนนี้ไม่อยู่ในสถานะรอลงนามแล้ว');
     if (isNaN(expireAt.getTime()) || expireAt < new Date()) throw new Error('ลิงก์ลงนามหมดอายุแล้ว');
+    assertApprovalStepSequence_(approvalId, stepNo);
 
     if (mode === 'reject') {
       if (!comment) throw new Error('กรุณาระบุเหตุผลที่ไม่อนุมัติหรือส่งกลับแก้ไข');
@@ -3559,6 +3788,7 @@ function advanceApprovalStep_(approvalId, completedStepNo, actorName, actorEmail
   if (!isApprovalFlowPendingStatus_(currentFlowStatus)) {
     throw new Error('เอกสารนี้ไม่ได้อยู่ระหว่างรอลงนามแล้ว สถานะปัจจุบัน: ' + currentFlowStatus);
   }
+  assertSignedSequenceUpTo_(approvalId, completedStepNo);
 
   const nextStep = completedStepNo + 1;
   if (nextStep <= 3) {
@@ -3606,15 +3836,27 @@ function sendApprovalRequestEmail_(approvalId, stepNo) {
   const token = normalizeText_(getCell_(row, sCols.token));
   const url = buildApprovalUrl_(token);
   const bookingId = normalizeText_(getCell_(flow.row, f.bookingId));
+  const approvalIdForMail = normalizeText_(getCell_(flow.row, f.approvalId));
   const topic = normalizeText_(getCell_(flow.row, f.topic));
   const roomName = normalizeText_(getCell_(flow.row, f.roomName));
+  const requester = normalizeText_(getCell_(flow.row, f.requester));
   const stepName = normalizeText_(getCell_(row, sCols.stepName));
+  const booking = getBookingRecordObject_(bookingId);
+  const useDate = getBookingUseDateText_(booking);
+  const useTime = getBookingUseTimeText_(booking);
   const content = `
     <p style="font-size:16px; color:#333; line-height:1.7;">เรียนผู้เกี่ยวข้อง,<br>มีเอกสารขอใช้ห้องประชุมรอลงนามในขั้นตอน <strong>${escapeHtml_(stepName)}</strong></p>
+    <div style="background:#fff7e6; border:1px solid #ffd591; border-radius:10px; padding:12px 14px; margin:12px 0; color:#7a4b00;">
+      <strong>โปรดตรวจสอบวันที่ใช้ห้องก่อนลงนาม</strong><br>กรณีหัวข้อกิจกรรมเหมือนกันหลายวัน ระบบจะแยกเอกสารและลิงก์ลงนามตามเลขที่การจองแต่ละรายการ
+    </div>
     <table style="width:100%; border-collapse:collapse; font-size:14px;">
       <tr><td style="padding:8px; color:#666; width:32%;">รหัสการจอง:</td><td style="padding:8px; font-weight:bold;">${escapeHtml_(bookingId)}</td></tr>
+      <tr><td style="padding:8px; color:#666;">รหัสอนุมัติ:</td><td style="padding:8px;">${escapeHtml_(approvalIdForMail)}</td></tr>
       <tr><td style="padding:8px; color:#666;">หัวข้อ:</td><td style="padding:8px;">${escapeHtml_(topic)}</td></tr>
       <tr><td style="padding:8px; color:#666;">ห้องประชุม:</td><td style="padding:8px;">${escapeHtml_(roomName)}</td></tr>
+      <tr><td style="padding:8px; color:#666;">วันที่ใช้ห้อง:</td><td style="padding:8px; font-weight:bold; color:#0d6efd;">${escapeHtml_(useDate)}</td></tr>
+      <tr><td style="padding:8px; color:#666;">เวลาใช้ห้อง:</td><td style="padding:8px; font-weight:bold;">${escapeHtml_(useTime)}</td></tr>
+      <tr><td style="padding:8px; color:#666;">ผู้จอง:</td><td style="padding:8px;">${escapeHtml_(requester)}</td></tr>
     </table>
     <div style="text-align:center; margin:28px 0;">
       <a href="${escapeHtml_(url)}" style="background:#0d6efd; color:white; padding:12px 22px; border-radius:8px; text-decoration:none; font-weight:bold;">เปิดหน้าลงนามเอกสาร</a>
@@ -3623,7 +3865,8 @@ function sendApprovalRequestEmail_(approvalId, stepNo) {
   `;
   const to = recipients[0];
   const cc = recipients.slice(1).join(',');
-  const options = { to: to, subject: `🖊️ เอกสารรอลงนาม: ${topic}`, htmlBody: createBaseEmailTemplate('เอกสารขอใช้ห้องประชุมรอลงนาม', content, EMAIL_THEME.primary), name: 'Meeting Room System' };
+  const subjectUseDate = useDate !== '-' ? ' | ใช้วันที่ ' + useDate : '';
+  const options = { to: to, subject: `🖊️ เอกสารรอลงนาม: ${topic}${subjectUseDate} | ${bookingId}`, htmlBody: createBaseEmailTemplate('เอกสารขอใช้ห้องประชุมรอลงนาม', content, EMAIL_THEME.primary), name: 'Meeting Room System' };
   if (cc) options.cc = cc;
   MailApp.sendEmail(options);
   const count = parseInt(getCell_(row, sCols.notifyCount), 10) || 0;
@@ -3699,6 +3942,7 @@ function clearUnusedFinalMemoPlaceholders_(presentation) {
     '{{ROOMOFFICER_SIGNATURE}}',
     '{{BUILDING_SIGNATURE}}',
     '{{DEPUTY_SIGNATURE}}',
+    '{{REQUESTER_SIGN_DATE}}',
     '{{ROOMOFFICER_NAME}}',
     '{{ROOMOFFICER_POSITION}}',
     '{{ROOMOFFICER_SIGN_DATE}}',
@@ -3736,6 +3980,7 @@ function addApprovalSummarySlide_(presentation, booking, steps) {
 }
 
 function generateFinalSignedMemoPdf_(approvalId) {
+  validateApprovalCompletionSequence_(approvalId);
   const flow = findApprovalFlowById_(approvalId);
   const f = flow.cols;
   const bookingId = normalizeText_(getCell_(flow.row, f.bookingId));
@@ -3754,6 +3999,7 @@ function generateFinalSignedMemoPdf_(approvalId) {
     const stepPositionShort = (step, fallback) => normalizeText_(step && step.approverPositionShort) || stepPosition(step, fallback);
     safeReplace('{{BOOKINGNUMBER}}', booking.bookingId);
     safeReplace('{{DATENOW}}', toThaiDateString(new Date()));
+    safeReplaceAllVariants(['{{REQUESTER_SIGN_DATE}}', '{{REQUESTER_SIGN_D\nATE}}', '{{REQUESTER_SIGN_D ATE}}'], formatThaiDateOnly_(booking.timestamp, flow.row && getCell_(flow.row, f.createdAt)));
     safeReplace('{{GUESTNAME}}', booking.requester);
     safeReplace('{{ROOM}}', booking.roomName);
     safeReplace('{{MEETINGTOPIC}}', booking.topic);
@@ -3830,8 +4076,17 @@ function generateFinalSignedMemoPdf_(approvalId) {
 }
 
 function finalizeApprovalFlow_(approvalId, actorName, actorEmail) {
-  const result = generateFinalSignedMemoPdf_(approvalId);
   const flow = findApprovalFlowById_(approvalId);
+  const c0 = flow.cols;
+  const bookingIdForError = normalizeText_(getCell_(flow.row, c0.bookingId));
+  let result;
+  try {
+    result = generateFinalSignedMemoPdf_(approvalId);
+  } catch (e) {
+    try { markBookingApprovalError_(bookingIdForError, e.message, 'System'); } catch (statusErr) {}
+    throw e;
+  }
+
   const c = flow.cols;
   flow.sheet.getRange(flow.rowNo, c.overallStatus).setValue('COMPLETED');
   flow.sheet.getRange(flow.rowNo, c.finalSignedPdfUrl).setValue(result.url);
@@ -3855,7 +4110,7 @@ function sendApprovalCompletedEmail_(approvalId, finalPdfUrl) {
   const roomName = normalizeText_(getCell_(flow.row, c.roomName));
   const requester = normalizeText_(getCell_(flow.row, c.requester));
   const content = `
-    <p style="font-size:16px; color:#333; line-height:1.7;">เรียน ${escapeHtml_(requester)},<br>เอกสารบันทึกข้อความขอใช้ห้องประชุมของท่านผ่านการลงนามครบถ้วนแล้ว</p>
+    <p style="font-size:16px; color:#333; line-height:1.7;">เรียนคุณ ${escapeHtml_(requester)},<br>เอกสารบันทึกข้อความขอใช้ห้องประชุมของท่านผ่านการลงนามครบถ้วนแล้ว</p>
     <table style="width:100%; border-collapse:collapse; font-size:14px;">
       <tr><td style="padding:8px; color:#666; width:30%;">รหัสการจอง:</td><td style="padding:8px; font-weight:bold;">${escapeHtml_(bookingId)}</td></tr>
       <tr><td style="padding:8px; color:#666;">หัวข้อ:</td><td style="padding:8px;">${escapeHtml_(topic)}</td></tr>
@@ -3901,19 +4156,34 @@ function getApprovalAdminOverview(sessionToken) {
   const flowSheet = ss.getSheetByName(SHEET_APPROVAL_FLOW);
   const cols = getApprovalFlowCols_(flowSheet);
   const rows = flowSheet.getDataRange().getValues().slice(1).filter(row => normalizeText_(getCell_(row, cols.approvalId)));
-  return rows.map(row => ({
-    approvalId: normalizeText_(getCell_(row, cols.approvalId)),
-    bookingId: normalizeText_(getCell_(row, cols.bookingId)),
-    topic: normalizeText_(getCell_(row, cols.topic)),
-    roomName: normalizeText_(getCell_(row, cols.roomName)),
-    requester: normalizeText_(getCell_(row, cols.requester)),
-    currentStep: normalizeText_(getCell_(row, cols.currentStep)),
-    currentApproverRole: normalizeText_(getCell_(row, cols.currentApproverRole)),
-    currentApproverEmail: normalizeText_(getCell_(row, cols.currentApproverEmail)),
-    status: normalizeText_(getCell_(row, cols.overallStatus)),
-    finalSignedPdfUrl: normalizeText_(getCell_(row, cols.finalSignedPdfUrl)),
-    updatedAt: getCell_(row, cols.updatedAt) instanceof Date ? Utilities.formatDate(getCell_(row, cols.updatedAt), Session.getScriptTimeZone() || 'Asia/Bangkok', 'yyyy-MM-dd HH:mm') : normalizeText_(getCell_(row, cols.updatedAt))
-  })).reverse().slice(0, 50);
+  return rows.map(row => {
+    const bookingId = normalizeText_(getCell_(row, cols.bookingId));
+    let useDate = '-';
+    let useTime = '-';
+    let bookingStatus = '';
+    try {
+      const booking = getBookingRecordObject_(bookingId);
+      useDate = getBookingUseDateText_(booking);
+      useTime = getBookingUseTimeText_(booking);
+      bookingStatus = getBookingStatusLabel_(booking.status);
+    } catch (e) {}
+    return {
+      approvalId: normalizeText_(getCell_(row, cols.approvalId)),
+      bookingId: bookingId,
+      topic: normalizeText_(getCell_(row, cols.topic)),
+      roomName: normalizeText_(getCell_(row, cols.roomName)),
+      requester: normalizeText_(getCell_(row, cols.requester)),
+      useDate: useDate,
+      useTime: useTime,
+      bookingStatus: bookingStatus,
+      currentStep: normalizeText_(getCell_(row, cols.currentStep)),
+      currentApproverRole: normalizeText_(getCell_(row, cols.currentApproverRole)),
+      currentApproverEmail: normalizeText_(getCell_(row, cols.currentApproverEmail)),
+      status: normalizeText_(getCell_(row, cols.overallStatus)),
+      finalSignedPdfUrl: normalizeText_(getCell_(row, cols.finalSignedPdfUrl)),
+      updatedAt: getCell_(row, cols.updatedAt) instanceof Date ? Utilities.formatDate(getCell_(row, cols.updatedAt), Session.getScriptTimeZone() || 'Asia/Bangkok', 'yyyy-MM-dd HH:mm') : normalizeText_(getCell_(row, cols.updatedAt))
+    };
+  }).reverse().slice(0, 50);
 }
 
 function resendCurrentApprovalLinkByAdmin(approvalId, sessionToken) {

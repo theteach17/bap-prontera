@@ -254,12 +254,13 @@
                             <div class="d-flex flex-wrap gap-2 mb-3">
                                 <button type="button" class="btn btn-outline-success btn-sm" onclick="loadApprovalAdminOverview()"><i class="bi bi-arrow-clockwise"></i> โหลดสถานะล่าสุด</button>
                                 <button type="button" class="btn btn-outline-primary btn-sm" onclick="createApprovalFlowForSelectedMemoBooking()"><i class="bi bi-send-plus"></i> เริ่ม/Reset Workflow จากเลขที่การจองที่เลือกด้านบน</button>
+                                <button type="button" class="btn btn-outline-warning btn-sm" onclick="repairBookingApprovalStatusFromAdmin()"><i class="bi bi-tools"></i> ซ่อมสถานะ Booking/Approval</button>
                             </div>
                             <div class="form-text mb-2">ใช้สำหรับติดตามเอกสารรอลงนาม ส่งลิงก์ลงนามซ้ำ และเริ่มกระบวนการใหม่หากเอกสารค้างหรือข้อมูลเปลี่ยน</div>
                             <div class="table-responsive" style="max-height:280px; overflow:auto;">
                                 <table class="table table-sm table-bordered align-middle" id="approvalAdminTable">
-                                    <thead class="table-success"><tr><th>รหัสอนุมัติ</th><th>เลขที่การจอง</th><th>หัวข้อ</th><th>สถานะ</th><th>ขั้นตอนปัจจุบัน</th><th>จัดการ</th></tr></thead>
-                                    <tbody><tr><td colspan="6" class="text-center text-muted">กดโหลดสถานะล่าสุด</td></tr></tbody>
+                                    <thead class="table-success"><tr><th>รหัสอนุมัติ</th><th>เลขที่การจอง</th><th>หัวข้อ</th><th>วัน/เวลาใช้ห้อง</th><th>สถานะ</th><th>ขั้นตอนปัจจุบัน</th><th>จัดการ</th></tr></thead>
+                                    <tbody><tr><td colspan="7" class="text-center text-muted">กดโหลดสถานะล่าสุด</td></tr></tbody>
                                 </table>
                             </div>
                         </div>

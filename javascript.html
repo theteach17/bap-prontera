@@ -490,81 +490,143 @@ async function handleFormSubmit(e) {
         width: '500px'
     }).then((result) => {
         if (result.isConfirmed) {
-            Swal.fire({
-                title: 'กรุณาลงลายมือชื่อผู้จอง',
-                html: `
-                    <div style="text-align: center;">
-                        <canvas id="sigCanvas" width="350" height="150" style="border: 1px solid #ced4da; border-radius: 8px; background: #fff; touch-action: none; cursor: crosshair; box-shadow: inset 0 1px 3px rgba(0,0,0,0.1);"></canvas>
-                        <br>
-                        <button type="button" class="btn btn-sm btn-outline-danger mt-3" id="clearBtn"><i class="bi bi-eraser"></i> ล้างลายเซ็น</button>
-                    </div>
-                `,
-                showCancelButton: true,
-                confirmButtonText: '<i class="bi bi-send"></i> ส่งข้อมูลการจอง',
-                cancelButtonText: 'ยกเลิก',
-                allowOutsideClick: false,
-                didOpen: () => {
-                    const canvas = document.getElementById('sigCanvas');
-                    const ctx = canvas.getContext('2d');
-                    const clearBtn = document.getElementById('clearBtn');
-                    let isDrawing = false;
+            checkDuplicateBeforeSignature(base64File, fileName);
+        }
+    });
+  }
 
-                    function getPos(e) {
-                        const rect = canvas.getBoundingClientRect();
-                        const clientX = e.clientX || (e.touches && e.touches[0].clientX);
-                        const clientY = e.clientY || (e.touches && e.touches[0].clientY);
-                        return { x: clientX - rect.left, y: clientY - rect.top };
-                    }
 
-                    function startPosition(e) {
-                        isDrawing = true;
-                        const pos = getPos(e);
-                        ctx.beginPath();
-                        ctx.moveTo(pos.x, pos.y);
-                        e.preventDefault();
-                    }
+  function checkDuplicateBeforeSignature(base64File = '', fileName = '') {
+    const duplicatePayload = {
+      bookingId: document.getElementById('bookingId').value,
+      isEdit: document.getElementById('isEdit').value === 'true',
+      topic: document.getElementById('topic').value,
+      requester: document.getElementById('requester').value,
+      requesterEmail: document.getElementById('requesterEmail').value,
+      roomId: document.getElementById('roomId').value,
+      startTime: document.getElementById('startTime').value,
+      endTime: document.getElementById('endTime').value
+    };
 
-                    function endPosition() { isDrawing = false; }
+    google.script.run
+      .withSuccessHandler((info) => {
+        const openSignature = () => showSignatureDialogAndSubmit(base64File, fileName);
+        if (!info || !info.hasSimilar) {
+          openSignature();
+          return;
+        }
 
-                    function draw(e) {
-                        if (!isDrawing) return;
-                        const pos = getPos(e);
-                        ctx.lineWidth = 3;
-                        ctx.lineCap = 'round';
-                        ctx.strokeStyle = '#000080';
-                        ctx.lineTo(pos.x, pos.y);
-                        ctx.stroke();
-                        e.preventDefault();
-                    }
+        const rows = (info.matches || []).map(m => `
+          <tr>
+            <td class="small">${escapeHtml(m.bookingId || '-')}</td>
+            <td class="small">${escapeHtml(m.useDateTime || '-')}</td>
+            <td class="small">${escapeHtml(m.statusLabel || m.status || '-')}</td>
+          </tr>
+        `).join('');
 
-                    canvas.addEventListener('mousedown', startPosition);
-                    canvas.addEventListener('mouseup', endPosition);
-                    canvas.addEventListener('mousemove', draw);
-                    canvas.addEventListener('touchstart', startPosition, {passive: false});
-                    canvas.addEventListener('touchend', endPosition);
-                    canvas.addEventListener('touchmove', draw, {passive: false});
+        Swal.fire({
+          title: 'พบรายการชื่อเดียวกัน',
+          html: `
+            <div class="text-start">
+              <div class="alert alert-warning mb-2">${escapeHtml(info.message || 'พบรายการจองที่คล้ายกันอยู่แล้ว')}</div>
+              <div class="small text-muted mb-2">ระบบไม่ได้ห้ามจองซ้ำ เพราะอาจเป็นการจองหลายวันจริง แต่ควรตรวจสอบก่อนส่งคำขอ</div>
+              <div class="table-responsive" style="max-height:220px; overflow:auto;">
+                <table class="table table-sm table-bordered align-middle mb-0">
+                  <thead class="table-warning"><tr><th>เลขที่การจอง</th><th>วัน/เวลาใช้ห้อง</th><th>สถานะ</th></tr></thead>
+                  <tbody>${rows}</tbody>
+                </table>
+              </div>
+            </div>
+          `,
+          icon: 'warning',
+          showCancelButton: true,
+          confirmButtonText: 'ยืนยันว่าต้องการจองเพิ่ม',
+          cancelButtonText: 'กลับไปตรวจสอบ'
+        }).then(r => {
+          if (r.isConfirmed) openSignature();
+        });
+      })
+      .withFailureHandler(() => {
+        // หากตรวจรายการซ้ำไม่สำเร็จ ไม่ควรทำให้การจองล้มเหลว ให้ดำเนินต่อ แต่ server ยังตรวจเวลาชนจริงใน saveBooking อยู่
+        showSignatureDialogAndSubmit(base64File, fileName);
+      })
+      .getSimilarBookingWarningForForm(duplicatePayload);
+  }
 
-                    clearBtn.addEventListener('click', () => {
-                        ctx.clearRect(0, 0, canvas.width, canvas.height);
-                    });
-                },
-                preConfirm: () => {
-                    const canvas = document.getElementById('sigCanvas');
-                    const blank = document.createElement('canvas');
-                    blank.width = canvas.width;
-                    blank.height = canvas.height;
+  function showSignatureDialogAndSubmit(base64File = '', fileName = '') {
+    Swal.fire({
+        title: 'กรุณาลงลายมือชื่อผู้จอง',
+        html: `
+            <div style="text-align: center;">
+                <canvas id="sigCanvas" width="350" height="150" style="border: 1px solid #ced4da; border-radius: 8px; background: #fff; touch-action: none; cursor: crosshair; box-shadow: inset 0 1px 3px rgba(0,0,0,0.1);"></canvas>
+                <br>
+                <button type="button" class="btn btn-sm btn-outline-danger mt-3" id="clearBtn"><i class="bi bi-eraser"></i> ล้างลายเซ็น</button>
+            </div>
+        `,
+        showCancelButton: true,
+        confirmButtonText: '<i class="bi bi-send"></i> ส่งข้อมูลการจอง',
+        cancelButtonText: 'ยกเลิก',
+        allowOutsideClick: false,
+        didOpen: () => {
+            const canvas = document.getElementById('sigCanvas');
+            const ctx = canvas.getContext('2d');
+            const clearBtn = document.getElementById('clearBtn');
+            let isDrawing = false;
 
-                    if (canvas.toDataURL() === blank.toDataURL()) {
-                        Swal.showValidationMessage('กรุณาลงลายเซ็นก่อนส่งข้อมูล');
-                        return false;
-                    }
-                    return canvas.toDataURL('image/png');
-                }
-            }).then((sigResult) => {
-                if (sigResult.isConfirmed) {
-                    submitToServer(base64File, fileName, sigResult.value);
-                }
+            function getPos(e) {
+                const rect = canvas.getBoundingClientRect();
+                const clientX = e.clientX || (e.touches && e.touches[0].clientX);
+                const clientY = e.clientY || (e.touches && e.touches[0].clientY);
+                return { x: clientX - rect.left, y: clientY - rect.top };
+            }
+
+            function startPosition(e) {
+                isDrawing = true;
+                const pos = getPos(e);
+                ctx.beginPath();
+                ctx.moveTo(pos.x, pos.y);
+                e.preventDefault();
+            }
+
+            function endPosition() { isDrawing = false; }
+
+            function draw(e) {
+                if (!isDrawing) return;
+                const pos = getPos(e);
+                ctx.lineWidth = 3;
+                ctx.lineCap = 'round';
+                ctx.strokeStyle = '#000080';
+                ctx.lineTo(pos.x, pos.y);
+                ctx.stroke();
+                e.preventDefault();
+            }
+
+            canvas.addEventListener('mousedown', startPosition);
+            canvas.addEventListener('mouseup', endPosition);
+            canvas.addEventListener('mousemove', draw);
+            canvas.addEventListener('touchstart', startPosition, {passive: false});
+            canvas.addEventListener('touchend', endPosition);
+            canvas.addEventListener('touchmove', draw, {passive: false});
+
+            clearBtn.addEventListener('click', () => {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
             });
+        },
+        preConfirm: () => {
+            const canvas = document.getElementById('sigCanvas');
+            const blank = document.createElement('canvas');
+            blank.width = canvas.width;
+            blank.height = canvas.height;
+
+            if (canvas.toDataURL() === blank.toDataURL()) {
+                Swal.showValidationMessage('กรุณาลงลายเซ็นก่อนส่งข้อมูล');
+                return false;
+            }
+            return canvas.toDataURL('image/png');
+        }
+    }).then((sigResult) => {
+        if (sigResult.isConfirmed) {
+            submitToServer(base64File, fileName, sigResult.value);
         }
     });
   }
@@ -1248,11 +1310,11 @@ async function handleFormSubmit(e) {
   function loadApprovalAdminOverview() {
       const tbody = document.querySelector('#approvalAdminTable tbody');
       if (!tbody) return;
-      tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">กำลังโหลด...</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">กำลังโหลด...</td></tr>';
       google.script.run
         .withSuccessHandler((rows) => {
             if (!rows || rows.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">ยังไม่มีรายการ Approval Workflow</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">ยังไม่มีรายการ Approval Workflow</td></tr>';
                 return;
             }
             tbody.innerHTML = rows.map(r => `
@@ -1260,7 +1322,8 @@ async function handleFormSubmit(e) {
                 <td class="small">${escapeHtml(r.approvalId)}</td>
                 <td class="small">${escapeHtml(r.bookingId)}</td>
                 <td class="small">${escapeHtml(r.topic)}<br><span class="text-muted">${escapeHtml(r.roomName)} / ${escapeHtml(r.requester)}</span></td>
-                <td><span class="badge bg-${r.status === 'COMPLETED' ? 'success' : (r.status === 'REJECTED' || r.status === 'CANCELLED' ? 'danger' : 'warning text-dark')}">${escapeHtml(r.status)}</span></td>
+                <td class="small text-nowrap"><b>${escapeHtml(r.useDate || '-')}</b><br><span class="text-muted">${escapeHtml(r.useTime || '-')}</span></td>
+                <td><span class="badge bg-${r.status === 'COMPLETED' ? 'success' : (r.status === 'REJECTED' || r.status === 'CANCELLED' ? 'danger' : 'warning text-dark')}">${escapeHtml(r.status)}</span><br><span class="small text-muted">${escapeHtml(r.bookingStatus || '')}</span></td>
                 <td class="small">${escapeHtml(r.currentStep)}: ${escapeHtml(r.currentApproverRole)}<br><span class="text-muted">${escapeHtml(r.currentApproverEmail || '')}</span></td>
                 <td class="text-nowrap">
                   ${r.finalSignedPdfUrl ? `<a class="btn btn-success btn-sm" href="${escapeAttr(r.finalSignedPdfUrl)}" target="_blank"><i class="bi bi-file-earmark-check"></i></a>` : ''}
@@ -1270,9 +1333,33 @@ async function handleFormSubmit(e) {
             `).join('');
         })
         .withFailureHandler((err) => {
-            tbody.innerHTML = `<tr><td colspan="6" class="text-danger text-center">${escapeHtml(err.message)}</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="7" class="text-danger text-center">${escapeHtml(err.message)}</td></tr>`;
         })
         .getApprovalAdminOverview(getSessionToken());
+  }
+
+
+  function repairBookingApprovalStatusFromAdmin() {
+      Swal.fire({
+          title: 'ซ่อมสถานะ Booking/Approval?',
+          html: '<div class="text-start">ระบบจะปรับสถานะในชีท Bookings ให้สอดคล้องกับ ApprovalFlow สำหรับรายการเก่าที่สถานะไม่ตรงกัน เช่น Bookings เป็น Approved แต่ Workflow ยังรอลงนาม</div>',
+          icon: 'warning',
+          showCancelButton: true,
+          confirmButtonText: 'เริ่มซ่อมสถานะ',
+          cancelButtonText: 'ยกเลิก'
+      }).then((result) => {
+          if (!result.isConfirmed) return;
+          Swal.fire({title:'กำลังซ่อมสถานะ...', allowOutsideClick:false, didOpen:()=>Swal.showLoading()});
+          google.script.run
+            .withSuccessHandler((res) => {
+                Swal.fire('ซ่อมสถานะเรียบร้อย', `ปรับปรุงแล้ว ${escapeHtml(res.repairedCount || 0)} รายการ`, 'success');
+                loadApprovalAdminOverview();
+                if (currentUser) loadDashboardData(false);
+                if (calendar) calendar.refetchEvents();
+            })
+            .withFailureHandler((err) => Swal.fire('เกิดข้อผิดพลาด', err.message, 'error'))
+            .repairBookingApprovalStatusConsistency();
+      });
   }
 
   function resendApprovalLink(approvalId) {

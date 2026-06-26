@@ -7,7 +7,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css">
   <style>
-    body{font-family:'Prompt',sans-serif;background:#f4f7fb;padding-bottom:40px}.hero{background:linear-gradient(135deg,#0d6efd,#6610f2);color:white;padding:28px 16px;text-align:center;border-radius:0 0 26px 26px}.main-card{max-width:900px;margin:-20px auto 0;border:0;border-radius:18px;box-shadow:0 14px 40px rgba(20,30,70,.12)}#sigCanvas{width:100%;height:190px;border:1px solid #ced4da;border-radius:12px;background:white;touch-action:none;cursor:crosshair}.step-pill{display:inline-block;padding:4px 10px;border-radius:999px;background:#eef2ff;margin:3px;font-size:.84rem}.critical-info{background:#fff7e6;border:1px solid #ffd591;border-radius:12px;padding:12px 14px;margin-top:12px}.signature-preview{max-height:150px;border:1px solid #dee2e6;border-radius:10px;padding:6px;background:#fff}
+    body{font-family:'Prompt',sans-serif;background:#f4f7fb;padding-bottom:40px}.hero{background:linear-gradient(135deg,#0d6efd,#6610f2);color:white;padding:28px 16px;text-align:center;border-radius:0 0 26px 26px}.main-card{max-width:900px;margin:-20px auto 0;border:0;border-radius:18px;box-shadow:0 14px 40px rgba(20,30,70,.12)}#sigCanvas{width:100%;height:190px;border:1px solid #ced4da;border-radius:12px;background:white;touch-action:none;cursor:crosshair}.step-pill{display:inline-block;padding:4px 10px;border-radius:999px;background:#eef2ff;margin:3px;font-size:.84rem}.critical-info{background:#fff7e6;border:1px solid #ffd591;border-radius:12px;padding:12px 14px;margin-top:12px}.layout-info{background:#f8fbff;border:1px solid #b6d4fe;border-radius:12px;padding:14px 16px;margin-top:14px}.layout-details{white-space:pre-wrap;background:#fff;border:1px solid #e9ecef;border-radius:10px;padding:10px}.signature-preview{max-height:150px;border:1px solid #dee2e6;border-radius:10px;padding:6px;background:#fff}
   </style>
 </head>
 <body>
@@ -36,6 +36,19 @@
               <div class="col-md-6"><b>รหัสการจอง:</b> <span id="bookingId"></span></div>
             </div>
             <div id="duplicateWarningBox" class="alert alert-warning mt-2 mb-0 py-2 small" style="display:none;"></div>
+          </div>
+          <div id="layoutInfoBox" class="layout-info" style="display:none;">
+            <div class="fw-bold text-primary mb-2"><i class="bi bi-layout-text-window-reverse"></i> รูปแบบการจัดโต๊ะและอุปกรณ์เพิ่มเติม</div>
+            <div id="layoutSetupDetailsRow" class="mb-3" style="display:none;">
+              <div class="small text-muted mb-1">รายละเอียดที่ผู้จองระบุ</div>
+              <div id="layoutSetupDetailsText" class="layout-details small"></div>
+            </div>
+            <div id="layoutFileRow" class="mb-2" style="display:none;">
+              <div class="small text-muted mb-1">ไฟล์ผังจัดโต๊ะที่แนบมากับรายการจอง</div>
+              <a id="layoutFileLink" href="#" target="_blank" rel="noopener noreferrer" class="btn btn-outline-primary btn-sm"><i class="bi bi-box-arrow-up-right"></i> เปิดไฟล์ผังจัดโต๊ะ</a>
+              <div class="form-text">ระบบเปิดไฟล์ในแท็บใหม่ เพื่อให้ตรวจสอบรูปแบบการจัดสถานที่ก่อนลงนาม</div>
+            </div>
+            <div id="layoutWarningRow" class="alert alert-warning py-2 small mb-0" style="display:none;"></div>
           </div>
           <div class="row small text-muted mt-3">
             <div class="col-md-6">ห้อง: <span id="roomName"></span></div>
@@ -70,6 +83,23 @@
     let isDrawing = false;
     document.addEventListener('DOMContentLoaded', () => { initCanvas(); loadApprovalDetails(); });
     function escapeHtml(v){return String(v??'').replace(/[&<>'"]/g,s=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[s]));}
+    function renderLayoutInfo(d){
+      const box=document.getElementById('layoutInfoBox');
+      const details=String(d.setupDetails||'').trim();
+      const layoutUrl=String(d.layoutUrl||'').trim();
+      const warning=String(d.layoutWarning||'').trim();
+      const shouldShow=!!(details||layoutUrl||warning||d.roomRequireSetup);
+      if(!shouldShow){box.style.display='none';return;}
+      box.style.display='block';
+      const detailsRow=document.getElementById('layoutSetupDetailsRow');
+      const detailsText=document.getElementById('layoutSetupDetailsText');
+      if(details){detailsRow.style.display='block';detailsText.textContent=details;}else{detailsRow.style.display='none';detailsText.textContent='';}
+      const fileRow=document.getElementById('layoutFileRow');
+      const fileLink=document.getElementById('layoutFileLink');
+      if(layoutUrl){fileRow.style.display='block';fileLink.href=layoutUrl;}else{fileRow.style.display='none';fileLink.removeAttribute('href');}
+      const warningRow=document.getElementById('layoutWarningRow');
+      if(warning){warningRow.style.display='block';warningRow.textContent=warning;}else{warningRow.style.display='none';warningRow.textContent='';}
+    }
     function loadApprovalDetails(){
       if(!approvalToken){showError('ไม่พบ token สำหรับลงนาม');return;}
       google.script.run.withSuccessHandler(d=>{
@@ -96,6 +126,7 @@
           box.style.display='block';
           box.innerHTML=`<b>หมายเหตุ:</b> ${escapeHtml(d.duplicateWarning)} กรุณาตรวจสอบวันที่ใช้ห้องและรหัสการจองก่อนลงนาม`;
         }
+        renderLayoutInfo(d);
         document.getElementById('stepStatus').innerHTML=(d.steps||[]).map(s=>`<span class="step-pill">${s.stepNo}. ${escapeHtml(s.stepName)}: <b>${escapeHtml(s.status)}</b>${s.signedAt?`<br><span class="small text-muted">${escapeHtml(s.signedAt)}</span>`:''}</span>`).join('');
       }).withFailureHandler(e=>showError(e.message)).getApprovalDetailsByToken(approvalToken);
     }

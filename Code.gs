@@ -48,6 +48,14 @@ const ADD_APPROVAL_SUMMARY_SLIDE = false;
 const SIGNATURE_IMAGE_WIDTH = 120;
 const SIGNATURE_IMAGE_HEIGHT = 50;
 
+// --- Daily Pending Approval Digest Settings ---
+// ส่งอีเมลสรุปรายการรอลงนามแบบรายบุคคล วันละครั้ง โดยใช้ Trigger เรียก sendDailyPendingApprovalDigest()
+// ออกแบบให้ไม่กระทบ workflow เดิมและไม่ส่งลิงก์ที่หมดอายุ/ถูกยกเลิก/ถูกแทนที่
+const DAILY_APPROVAL_DIGEST_TIMEZONE = "Asia/Bangkok";
+const DAILY_APPROVAL_DIGEST_TRIGGER_HOUR = 8;
+const DAILY_APPROVAL_DIGEST_TRIGGER_MINUTE = 15;
+const DAILY_APPROVAL_DIGEST_MAX_ADMIN_ISSUE_ROWS = 40;
+
 
 // --- Security, Schema & Validation Constants ---
 const SESSION_CACHE_PREFIX = "MRBS_SESSION_";
@@ -1138,8 +1146,8 @@ function createEmailTemplate(data, type, officerName = '') {
   if (type === 'user') {
     headerText = isUpdate ? 'แจ้งเตือนการแก้ไขการจอง' : 'ยืนยันการจองห้องประชุม';
     subText = isUpdate ?
-       `เรียนคุณ ${safe.requester},<br>รายการจองของคุณได้ถูก <strong>แก้ไข</strong> เรียบร้อยแล้ว รายละเอียดล่าสุดดังนี้:` :
-       `เรียนคุณ ${safe.requester},<br>การจองของคุณได้รับการยืนยันเรียบร้อยแล้ว รายละเอียดดังนี้:`;
+       `เรียน ${safe.requester},<br>รายการจองของคุณได้ถูก <strong>แก้ไข</strong> เรียบร้อยแล้ว รายละเอียดล่าสุดดังนี้:` :
+       `เรียน ${safe.requester},<br>การจองของคุณได้รับการยืนยันเรียบร้อยแล้ว รายละเอียดดังนี้:`;
   } else if (type === 'admin') {
     headerText = isUpdate ? 'เอกสารบันทึกข้อความกรณีแก้ไขการจอง' : 'เอกสารบันทึกข้อความการจองห้องประชุมใหม่';
     subText = isUpdate ?
@@ -1148,8 +1156,8 @@ function createEmailTemplate(data, type, officerName = '') {
   } else {
     headerText = isUpdate ? 'แจ้งเตือนการแก้ไขข้อมูลการจอง' : 'แจ้งเตือนการจองห้องประชุมใหม่';
     subText = isUpdate ?
-      `เรียนคุณ ${escapeHtml_(officerName)},<br>มีการ <strong>แก้ไข</strong> รายการจองห้องประชุมภายใต้การดูแลของคุณ รายละเอียดล่าสุดดังนี้:` :
-      `เรียนคุณ ${escapeHtml_(officerName)},<br>มีการจองห้องประชุมภายใต้การดูแลของคุณ รายละเอียดดังนี้:`;
+      `เรียน ${escapeHtml_(officerName)},<br>มีการ <strong>แก้ไข</strong> รายการจองห้องประชุมภายใต้การดูแลของคุณ รายละเอียดล่าสุดดังนี้:` :
+      `เรียน ${escapeHtml_(officerName)},<br>มีการจองห้องประชุมภายใต้การดูแลของคุณ รายละเอียดดังนี้:`;
   }
 
   const shouldShowMemoLink = type === 'admin' && data.memoPdfUrl;
@@ -1796,6 +1804,11 @@ function uploadSetupFileToDrive(base64Data, filename) {
     folder.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
 
     const file = folder.createFile(blob);
+    try {
+      file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    } catch (shareErr) {
+      console.warn("ไม่สามารถตั้งค่าสิทธิ์ไฟล์ผังจัดโต๊ะเป็น anyone-with-link ได้: " + shareErr.message);
+    }
     return file.getUrl();
   } catch (e) {
     console.error("File upload error: " + e.message);
@@ -1858,6 +1871,93 @@ function extractDriveFileId_(url) {
   if (match && match[1]) return match[1];
   match = text.match(/[-\w]{25,}/);
   return match ? match[0] : '';
+}
+
+
+function sanitizeDriveViewUrl_(url) {
+  const text = normalizeText_(url);
+  if (!text) return '';
+  if (/[<>"']/g.test(text)) return '';
+  const lower = text.toLowerCase();
+  const allowedPrefix = lower.indexOf('https://drive.google.com/') === 0 || lower.indexOf('https://docs.google.com/') === 0;
+  if (!allowedPrefix) return '';
+  const fileId = extractDriveFileId_(text);
+  if (!fileId) return '';
+  return text;
+}
+
+function buildApprovalLayoutInfoForResponse_(booking) {
+  const setupDetails = sanitizePlainText_(booking && booking.setupDetails, 1000);
+  const rawLayoutUrl = normalizeText_(booking && booking.layoutUrl);
+  const safeLayoutUrl = sanitizeDriveViewUrl_(rawLayoutUrl);
+  let roomRequireSetup = false;
+  try {
+    const room = getRoomById_(booking && booking.roomId);
+    roomRequireSetup = !!(room && room.requireSetup);
+  } catch (e) {
+    roomRequireSetup = false;
+  }
+
+  let layoutWarning = '';
+  if (rawLayoutUrl && !safeLayoutUrl) {
+    layoutWarning = 'พบข้อมูลไฟล์ผังจัดโต๊ะ แต่รูปแบบลิงก์ไม่ปลอดภัยหรือไม่รองรับ กรุณาติดต่อผู้ดูแลระบบเพื่อตรวจสอบไฟล์แนบ';
+  } else if (roomRequireSetup && !safeLayoutUrl) {
+    layoutWarning = 'ห้องนี้กำหนดให้ต้องมีไฟล์ผังจัดโต๊ะ แต่ไม่พบไฟล์แนบที่เปิดดูได้ กรุณาตรวจสอบก่อนลงนาม';
+  }
+
+  return {
+    setupDetails: setupDetails,
+    hasSetupDetails: !!setupDetails,
+    layoutUrl: safeLayoutUrl,
+    hasLayoutFile: !!safeLayoutUrl,
+    roomRequireSetup: roomRequireSetup,
+    layoutWarning: layoutWarning
+  };
+}
+
+function setDriveFileAnyoneWithLinkByUrl_(url, contextLabel) {
+  const safeUrl = sanitizeDriveViewUrl_(url);
+  if (!safeUrl) return { ok: false, reason: 'INVALID_OR_UNSUPPORTED_URL' };
+  const fileId = extractDriveFileId_(safeUrl);
+  if (!fileId) return { ok: false, reason: 'FILE_ID_NOT_FOUND' };
+  try {
+    DriveApp.getFileById(fileId).setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    return { ok: true, fileId: fileId };
+  } catch (e) {
+    const reason = e && e.message ? e.message : String(e);
+    console.warn('ไม่สามารถตั้งค่าสิทธิ์ไฟล์ผังจัดโต๊ะได้ [' + normalizeText_(contextLabel) + ']: ' + reason);
+    return { ok: false, fileId: fileId, reason: reason };
+  }
+}
+
+function repairPendingLayoutFileSharingForEditor() {
+  ensureDatabaseSchema_();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEET_BOOKINGS);
+  if (!sheet) throw new Error('ไม่พบชีท Bookings');
+  const cols = getBookingCols_(sheet);
+  const values = sheet.getDataRange().getValues();
+  const repaired = [];
+  const skipped = [];
+
+  for (let i = 1; i < values.length; i++) {
+    const row = values[i];
+    const bookingId = normalizeText_(getCell_(row, cols.id));
+    const status = normalizeBookingStatus_(getCell_(row, cols.status));
+    const layoutUrl = normalizeText_(getCell_(row, cols.layoutUrl));
+    if (!bookingId || !layoutUrl) continue;
+    if (![BOOKING_STATUS.PENDING_APPROVAL, BOOKING_STATUS.APPROVED, BOOKING_STATUS.APPROVAL_ERROR].includes(status)) continue;
+
+    const result = setDriveFileAnyoneWithLinkByUrl_(layoutUrl, bookingId);
+    if (result.ok) {
+      repaired.push({ bookingId: bookingId, fileId: result.fileId });
+    } else {
+      skipped.push({ bookingId: bookingId, reason: result.reason || 'UNKNOWN' });
+    }
+  }
+
+  logAction('Apps Script Editor', 'Repair Pending Layout File Sharing', 'ตั้งค่าสิทธิ์ไฟล์ผังจัดโต๊ะสำเร็จ ' + repaired.length + ' รายการ, ข้าม ' + skipped.length + ' รายการ');
+  return { repairedCount: repaired.length, skippedCount: skipped.length, repaired: repaired, skipped: skipped };
 }
 
 function copyExistingMemoPdf_(bookingId, existingMemoPdfUrl) {
@@ -2565,7 +2665,7 @@ function buildCancellationEmailHtml_(data, recipientType) {
   };
 
   const intro = recipientType === 'user'
-    ? `เรียนคุณ ${safe.requester},<br>รายการจองห้องประชุมของท่านถูกยกเลิกแล้ว รายละเอียดดังนี้:`
+    ? `เรียน ${safe.requester},<br>รายการจองห้องประชุมของท่านถูกยกเลิกแล้ว รายละเอียดดังนี้:`
     : `เรียนเจ้าหน้าที่ผู้รับผิดชอบห้องประชุม,<br>มีรายการจองห้องประชุมภายใต้การดูแลของท่านถูกยกเลิกแล้ว รายละเอียดดังนี้:`;
 
   const contentHtml = `
@@ -3207,8 +3307,7 @@ function getApproverConfig_(stepNo, booking) {
   return list.length ? list[0] : null;
 }
 
-function validateApprovalApproverConfig(sessionToken) {
-  const user = requireUser_(sessionToken, ['Admin']);
+function buildApprovalApproverConfigValidationResults_() {
   ensureDatabaseSchema_();
   const rooms = getRoomsData();
   const results = [];
@@ -3252,7 +3351,21 @@ function validateApprovalApproverConfig(sessionToken) {
     warning: step2 && step2.email ? '' : 'ยังไม่ได้ตั้งค่าอีเมลกลุ่มงานอาคารสถานที่และสิ่งแวดล้อม'
   });
 
+  return results;
+}
+
+function validateApprovalApproverConfig(sessionToken) {
+  const user = requireUser_(sessionToken, ['Admin']);
+  const results = buildApprovalApproverConfigValidationResults_();
   logAction(formatUserForLog_(user), 'Validate Approval Approver Config', `ตรวจสอบผู้ลงนาม Approval จำนวน ${results.length} รายการ`);
+  return results;
+}
+
+// ใช้รันจาก Apps Script Editor โดยตรงเท่านั้น เพื่อทดสอบค่าผู้ลงนามโดยไม่ต้องมี sessionToken จากหน้าเว็บ
+// ไม่ผ่อนสิทธิ์ของ validateApprovalApproverConfig(sessionToken) เดิม เพื่อไม่ให้หน้าเว็บสาธารณะเรียกข้ามระบบ Login ได้
+function validateApprovalApproverConfigForEditor() {
+  const results = buildApprovalApproverConfigValidationResults_();
+  logAction('Apps Script Editor', 'Validate Approval Approver Config (Manual)', `ตรวจสอบผู้ลงนาม Approval จำนวน ${results.length} รายการ`);
   return results;
 }
 
@@ -3652,6 +3765,15 @@ function getApprovalDetailsByToken(token) {
     roomId: booking.roomId
   });
 
+  const layoutInfo = available ? buildApprovalLayoutInfoForResponse_(booking) : {
+    setupDetails: '',
+    hasSetupDetails: false,
+    layoutUrl: '',
+    hasLayoutFile: false,
+    roomRequireSetup: false,
+    layoutWarning: ''
+  };
+
   return {
     available: available,
     message: message,
@@ -3671,6 +3793,12 @@ function getApprovalDetailsByToken(token) {
     requester: booking.requester,
     requesterEmail: booking.requesterEmail,
     headcount: booking.headcount,
+    setupDetails: layoutInfo.setupDetails,
+    hasSetupDetails: layoutInfo.hasSetupDetails,
+    layoutUrl: layoutInfo.layoutUrl,
+    hasLayoutFile: layoutInfo.hasLayoutFile,
+    roomRequireSetup: layoutInfo.roomRequireSetup,
+    layoutWarning: layoutInfo.layoutWarning,
     bookingStatus: booking.status,
     bookingStatusLabel: getBookingStatusLabel_(booking.status),
     startStr: new Date(booking.start).toLocaleString('th-TH', { year:'numeric', month:'long', day:'numeric', hour:'2-digit', minute:'2-digit', timeZone:'Asia/Bangkok' }),
@@ -4110,7 +4238,7 @@ function sendApprovalCompletedEmail_(approvalId, finalPdfUrl) {
   const roomName = normalizeText_(getCell_(flow.row, c.roomName));
   const requester = normalizeText_(getCell_(flow.row, c.requester));
   const content = `
-    <p style="font-size:16px; color:#333; line-height:1.7;">เรียนคุณ ${escapeHtml_(requester)},<br>เอกสารบันทึกข้อความขอใช้ห้องประชุมของท่านผ่านการลงนามครบถ้วนแล้ว</p>
+    <p style="font-size:16px; color:#333; line-height:1.7;">เรียน ${escapeHtml_(requester)},<br>เอกสารบันทึกข้อความขอใช้ห้องประชุมของท่านผ่านการลงนามครบถ้วนแล้ว</p>
     <table style="width:100%; border-collapse:collapse; font-size:14px;">
       <tr><td style="padding:8px; color:#666; width:30%;">รหัสการจอง:</td><td style="padding:8px; font-weight:bold;">${escapeHtml_(bookingId)}</td></tr>
       <tr><td style="padding:8px; color:#666;">หัวข้อ:</td><td style="padding:8px;">${escapeHtml_(topic)}</td></tr>
@@ -4130,6 +4258,573 @@ function sendApprovalRejectedEmail_(approvalId, reason) {
   const topic = normalizeText_(getCell_(flow.row, c.topic));
   const content = `<p>เอกสารขอใช้ห้องประชุมหัวข้อ <strong>${escapeHtml_(topic)}</strong> ไม่ได้รับการอนุมัติหรือถูกส่งกลับแก้ไข</p><p><strong>เหตุผล:</strong> ${escapeHtml_(reason)}</p>`;
   MailApp.sendEmail({ to: requesterEmail, subject: `⚠️ เอกสารถูกส่งกลับ/ไม่อนุมัติ: ${topic}`, htmlBody: createBaseEmailTemplate('เอกสารถูกส่งกลับ/ไม่อนุมัติ', content, EMAIL_THEME.warning), name: 'Meeting Room System' });
+}
+
+
+// ==========================================
+// DAILY PENDING APPROVAL DIGEST
+// ==========================================
+
+function getLocalDateKey_(value, timezone) {
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return '';
+  return Utilities.formatDate(d, timezone || DAILY_APPROVAL_DIGEST_TIMEZONE, 'yyyy-MM-dd');
+}
+
+function isSameLocalDate_(a, b, timezone) {
+  const aKey = getLocalDateKey_(a, timezone || DAILY_APPROVAL_DIGEST_TIMEZONE);
+  const bKey = getLocalDateKey_(b, timezone || DAILY_APPROVAL_DIGEST_TIMEZONE);
+  return !!aKey && !!bKey && aKey === bKey;
+}
+
+function getApprovalDigestBookingMap_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEET_BOOKINGS);
+  const cols = getBookingCols_(sheet);
+  const rows = sheet.getDataRange().getValues();
+  const map = {};
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    const bookingId = normalizeText_(getCell_(row, cols.id));
+    if (!bookingId) continue;
+    map[bookingId] = buildBookingObjectFromRow_(row, cols);
+  }
+  return map;
+}
+
+function getApprovalDigestFlowMap_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEET_APPROVAL_FLOW);
+  const cols = getApprovalFlowCols_(sheet);
+  const rows = sheet.getDataRange().getValues();
+  const map = {};
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    const approvalId = normalizeText_(getCell_(row, cols.approvalId));
+    if (!approvalId) continue;
+    map[approvalId] = {
+      rowNo: i + 1,
+      row: row,
+      approvalId: approvalId,
+      bookingId: normalizeText_(getCell_(row, cols.bookingId)),
+      topic: normalizeText_(getCell_(row, cols.topic)),
+      roomId: normalizeText_(getCell_(row, cols.roomId)),
+      roomName: normalizeText_(getCell_(row, cols.roomName)),
+      requester: normalizeText_(getCell_(row, cols.requester)),
+      requesterEmail: normalizeText_(getCell_(row, cols.requesterEmail)),
+      currentStep: parseInt(getCell_(row, cols.currentStep), 10),
+      currentApproverRole: normalizeText_(getCell_(row, cols.currentApproverRole)),
+      currentApproverEmail: normalizeText_(getCell_(row, cols.currentApproverEmail)),
+      overallStatus: normalizeText_(getCell_(row, cols.overallStatus)),
+      initialMemoPdfUrl: normalizeText_(getCell_(row, cols.initialMemoPdfUrl))
+    };
+  }
+  return map;
+}
+
+function addDailyApprovalDigestIssue_(issues, code, message, context) {
+  issues.push({
+    code: sanitizePlainText_(code || 'UNKNOWN', 80),
+    message: sanitizePlainText_(message || '', 800),
+    approvalId: sanitizePlainText_(context && context.approvalId, 120),
+    bookingId: sanitizePlainText_(context && context.bookingId, 120),
+    stepNo: context && context.stepNo ? context.stepNo : '',
+    stepName: sanitizePlainText_(context && context.stepName, 200),
+    approverEmail: sanitizePlainText_(context && context.approverEmail, 250)
+  });
+}
+
+function buildDailyApprovalDigestItem_(params) {
+  const booking = params.booking || {};
+  const flow = params.flow || {};
+  const stepRow = params.stepRow;
+  const sCols = params.stepCols;
+  const stepNo = parseInt(getCell_(stepRow, sCols.stepNo), 10);
+  const approvalId = normalizeText_(getCell_(stepRow, sCols.approvalId));
+  const bookingId = normalizeText_(getCell_(stepRow, sCols.bookingId)) || flow.bookingId || booking.bookingId;
+  const token = normalizeText_(getCell_(stepRow, sCols.token));
+  const expireAt = new Date(getCell_(stepRow, sCols.tokenExpireAt));
+  const daysToExpire = isNaN(expireAt.getTime()) ? '' : Math.ceil((expireAt.getTime() - params.now.getTime()) / (24 * 60 * 60 * 1000));
+  return {
+    stepKey: approvalId + '#' + stepNo,
+    stepRowNo: params.stepRowNo,
+    notifyCount: parseInt(getCell_(stepRow, sCols.notifyCount), 10) || 0,
+    approvalId: approvalId,
+    bookingId: bookingId,
+    stepNo: stepNo,
+    stepName: normalizeText_(getCell_(stepRow, sCols.stepName)),
+    approverName: normalizeText_(getCell_(stepRow, sCols.approverName)),
+    approverEmail: normalizeText_(getCell_(stepRow, sCols.approverEmail)),
+    tokenExpireAt: expireAt,
+    tokenExpireText: isNaN(expireAt.getTime()) ? '-' : Utilities.formatDate(expireAt, DAILY_APPROVAL_DIGEST_TIMEZONE, 'dd/MM/yyyy HH:mm') + ' น.',
+    daysToExpire: daysToExpire,
+    approvalUrl: buildApprovalUrl_(token),
+    memoUrl: flow.initialMemoPdfUrl || booking.memoPdfUrl || booking.initialMemoPdfUrl || '',
+    topic: booking.topic || flow.topic || '-',
+    roomName: booking.roomName || flow.roomName || '-',
+    requester: booking.requester || flow.requester || '-',
+    requesterEmail: booking.requesterEmail || flow.requesterEmail || '',
+    useDate: getBookingUseDateText_(booking),
+    useTime: getBookingUseTimeText_(booking),
+    headcount: booking.headcount || '',
+    bookingStatus: booking.status || ''
+  };
+}
+
+function getPendingApprovalDigestData_() {
+  ensureDatabaseSchema_();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const stepSheet = ss.getSheetByName(SHEET_APPROVAL_STEPS);
+  const stepCols = getApprovalStepCols_(stepSheet);
+  const stepRows = stepSheet.getDataRange().getValues();
+  const flowMap = getApprovalDigestFlowMap_();
+  const bookingMap = getApprovalDigestBookingMap_();
+  const now = new Date();
+  const todayKey = getLocalDateKey_(now, DAILY_APPROVAL_DIGEST_TIMEZONE);
+  const groups = {};
+  const issues = [];
+  const skipped = {
+    alreadyNotifiedToday: 0,
+    notPendingStep: 0,
+    terminalOrInactiveFlow: 0,
+    notCurrentStep: 0,
+    bookingNotPendingApproval: 0,
+    invalidToken: 0,
+    invalidEmail: 0,
+    invalidSequence: 0,
+    missingData: 0
+  };
+
+  for (let i = 1; i < stepRows.length; i++) {
+    const row = stepRows[i];
+    const status = normalizeText_(getCell_(row, stepCols.status));
+    if (status !== 'PENDING') {
+      skipped.notPendingStep++;
+      continue;
+    }
+
+    const approvalId = normalizeText_(getCell_(row, stepCols.approvalId));
+    const stepNo = parseInt(getCell_(row, stepCols.stepNo), 10);
+    const stepName = normalizeText_(getCell_(row, stepCols.stepName));
+    const stepBookingId = normalizeText_(getCell_(row, stepCols.bookingId));
+    const approverEmailRaw = normalizeText_(getCell_(row, stepCols.approverEmail));
+    const lastNotifiedAt = getCell_(row, stepCols.lastNotifiedAt);
+
+    if (isSameLocalDate_(lastNotifiedAt, now, DAILY_APPROVAL_DIGEST_TIMEZONE)) {
+      skipped.alreadyNotifiedToday++;
+      continue;
+    }
+
+    const context = { approvalId: approvalId, bookingId: stepBookingId, stepNo: stepNo, stepName: stepName, approverEmail: approverEmailRaw };
+    const flow = flowMap[approvalId];
+    if (!approvalId || !stepNo || !flow) {
+      skipped.missingData++;
+      addDailyApprovalDigestIssue_(issues, 'MISSING_FLOW_OR_STEP_DATA', 'ไม่พบข้อมูล ApprovalFlow หรือข้อมูลขั้นตอนลงนามไม่สมบูรณ์', context);
+      continue;
+    }
+
+    const flowStatus = normalizeText_(flow.overallStatus);
+    if (!isApprovalFlowPendingStatus_(flowStatus)) {
+      skipped.terminalOrInactiveFlow++;
+      if (!isApprovalFlowTerminalStatus_(flowStatus)) {
+        addDailyApprovalDigestIssue_(issues, 'FLOW_NOT_PENDING', 'ApprovalFlow ไม่ได้อยู่ในสถานะรอลงนามที่ระบบรู้จัก: ' + flowStatus, context);
+      }
+      continue;
+    }
+
+    if (parseInt(flow.currentStep, 10) !== stepNo) {
+      skipped.notCurrentStep++;
+      addDailyApprovalDigestIssue_(issues, 'STEP_NOT_CURRENT', 'ขั้นตอนนี้เป็น PENDING แต่ไม่ตรงกับ Current Step ของ ApprovalFlow', context);
+      continue;
+    }
+
+    const bookingId = flow.bookingId || stepBookingId;
+    if (stepBookingId && flow.bookingId && stepBookingId !== flow.bookingId) {
+      skipped.missingData++;
+      addDailyApprovalDigestIssue_(issues, 'BOOKING_ID_MISMATCH', 'Booking ID ใน ApprovalSteps และ ApprovalFlow ไม่ตรงกัน', context);
+      continue;
+    }
+
+    const booking = bookingMap[bookingId];
+    if (!booking) {
+      skipped.missingData++;
+      addDailyApprovalDigestIssue_(issues, 'BOOKING_NOT_FOUND', 'ไม่พบรายการจองของ Approval นี้ในชีท Bookings', context);
+      continue;
+    }
+
+    if (normalizeBookingStatus_(booking.status) !== BOOKING_STATUS.PENDING_APPROVAL) {
+      skipped.bookingNotPendingApproval++;
+      if (![BOOKING_STATUS.CANCELLED, BOOKING_STATUS.REJECTED, BOOKING_STATUS.APPROVED].includes(normalizeBookingStatus_(booking.status))) {
+        addDailyApprovalDigestIssue_(issues, 'BOOKING_STATUS_NOT_PENDING_APPROVAL', 'สถานะ Booking ไม่ใช่ Pending Approval: ' + normalizeBookingStatus_(booking.status), context);
+      }
+      continue;
+    }
+
+    const token = normalizeText_(getCell_(row, stepCols.token));
+    const expireAt = new Date(getCell_(row, stepCols.tokenExpireAt));
+    if (!token || isNaN(expireAt.getTime())) {
+      skipped.invalidToken++;
+      addDailyApprovalDigestIssue_(issues, 'INVALID_TOKEN', 'ไม่พบ Token หรือตั้งค่าวันหมดอายุ Token ไม่ถูกต้อง', context);
+      continue;
+    }
+    if (expireAt.getTime() <= now.getTime()) {
+      skipped.invalidToken++;
+      addDailyApprovalDigestIssue_(issues, 'TOKEN_EXPIRED', 'Token ลงนามหมดอายุแล้ว ต้องให้ Admin Reset Workflow หรือส่งลิงก์ใหม่ตามกระบวนการ', context);
+      continue;
+    }
+
+    try {
+      assertApprovalStepSequence_(approvalId, stepNo);
+    } catch (sequenceError) {
+      skipped.invalidSequence++;
+      addDailyApprovalDigestIssue_(issues, 'INVALID_APPROVAL_SEQUENCE', sequenceError.message, context);
+      continue;
+    }
+
+    const recipients = uniqueEmailList_([approverEmailRaw]);
+    if (recipients.length === 0) {
+      skipped.invalidEmail++;
+      addDailyApprovalDigestIssue_(issues, 'INVALID_APPROVER_EMAIL', 'ไม่พบอีเมลผู้ลงนามที่ถูกต้องในขั้นตอนปัจจุบัน', context);
+      continue;
+    }
+
+    const item = buildDailyApprovalDigestItem_({
+      stepRow: row,
+      stepRowNo: i + 1,
+      stepCols: stepCols,
+      flow: flow,
+      booking: booking,
+      now: now
+    });
+
+    recipients.forEach(email => {
+      const key = email.toLowerCase();
+      if (!groups[key]) {
+        groups[key] = {
+          approverEmail: email,
+          approverName: item.approverName || 'ผู้ลงนาม',
+          items: []
+        };
+      }
+      groups[key].items.push(item);
+    });
+  }
+
+  Object.keys(groups).forEach(key => {
+    groups[key].items.sort((a, b) => {
+      const aTime = new Date(a.tokenExpireAt).getTime() || 0;
+      const bTime = new Date(b.tokenExpireAt).getTime() || 0;
+      if (aTime !== bTime) return aTime - bTime;
+      return String(a.useDate + a.useTime + a.bookingId).localeCompare(String(b.useDate + b.useTime + b.bookingId));
+    });
+  });
+
+  return {
+    now: now,
+    todayKey: todayKey,
+    stepSheet: stepSheet,
+    stepCols: stepCols,
+    groups: groups,
+    issues: issues,
+    skipped: skipped
+  };
+}
+
+function buildDailyPendingApprovalDigestEmailBody_(group, now) {
+  const itemCount = group.items.length;
+  const todayText = toThaiDateString(now);
+  const rowsHtml = group.items.map((item, index) => {
+    const expireWarning = item.daysToExpire !== '' && item.daysToExpire <= 2
+      ? `<div style="margin-top:6px; color:#b42318; font-weight:bold;">ลิงก์จะหมดอายุใน ${escapeHtml_(item.daysToExpire)} วัน</div>`
+      : '';
+    const memoLink = item.memoUrl
+      ? `<a href="${escapeHtml_(item.memoUrl)}" style="color:#6c757d; text-decoration:underline;">เปิดเอกสารคำขอ</a>`
+      : `<span style="color:#999;">ไม่มีลิงก์เอกสาร</span>`;
+    return `
+      <tr>
+        <td style="padding:12px; border:1px solid #e5e7eb; vertical-align:top; text-align:center; color:#555;">${index + 1}</td>
+        <td style="padding:12px; border:1px solid #e5e7eb; vertical-align:top;">
+          <div style="font-weight:bold; color:#111827; margin-bottom:6px;">${escapeHtml_(item.topic)}</div>
+          <div style="font-size:13px; color:#555; line-height:1.7;">
+            <strong>รหัสการจอง:</strong> ${escapeHtml_(item.bookingId)}<br>
+            <strong>รหัสอนุมัติ:</strong> ${escapeHtml_(item.approvalId)}<br>
+            <strong>ห้องประชุม:</strong> ${escapeHtml_(item.roomName)}<br>
+            <strong>วันที่ใช้ห้อง:</strong> <span style="color:#0d6efd; font-weight:bold;">${escapeHtml_(item.useDate)}</span><br>
+            <strong>เวลาใช้ห้อง:</strong> ${escapeHtml_(item.useTime)}<br>
+            <strong>ผู้จอง:</strong> ${escapeHtml_(item.requester)}<br>
+            <strong>ขั้นตอนที่ต้องลงนาม:</strong> ${escapeHtml_(item.stepName)}<br>
+            <strong>หมดอายุ:</strong> ${escapeHtml_(item.tokenExpireText)}
+            ${expireWarning}
+          </div>
+          <div style="margin-top:8px; font-size:13px;">${memoLink}</div>
+        </td>
+        <td style="padding:12px; border:1px solid #e5e7eb; vertical-align:middle; text-align:center; min-width:120px;">
+          <a href="${escapeHtml_(item.approvalUrl)}" style="display:inline-block; background:#0d6efd; color:white; padding:10px 14px; border-radius:8px; text-decoration:none; font-weight:bold;">ลงนาม</a>
+        </td>
+      </tr>`;
+  }).join('');
+
+  return `
+    <p style="font-size:16px; color:#333; line-height:1.7; margin-top:0;">เรียน${escapeHtml_(group.approverName || 'ผู้ลงนาม')},</p>
+    <p style="font-size:15px; color:#333; line-height:1.7;">
+      ระบบขอแจ้งเตือนรายการเอกสารขอใช้ห้องประชุมที่ยังรอการลงนามของท่าน ประจำวันที่ <strong>${escapeHtml_(todayText)}</strong>
+      จำนวน <strong style="color:#0d6efd;">${itemCount}</strong> รายการ
+    </p>
+    <div style="background:#fff7e6; border:1px solid #ffd591; border-radius:10px; padding:12px 14px; margin:14px 0; color:#7a4b00; line-height:1.6;">
+      <strong>โปรดตรวจสอบวันที่ใช้ห้องและรหัสการจองก่อนลงนาม</strong><br>
+      หากมีหัวข้อประชุมเหมือนกันหลายวัน ระบบจะแสดงเป็นคนละรายการและใช้ลิงก์ลงนามคนละลิงก์
+    </div>
+    <table style="width:100%; border-collapse:collapse; font-size:14px; margin-top:14px;">
+      <thead>
+        <tr style="background:#f3f4f6; color:#374151;">
+          <th style="padding:10px; border:1px solid #e5e7eb; width:40px;">#</th>
+          <th style="padding:10px; border:1px solid #e5e7eb; text-align:left;">รายละเอียดรายการรอลงนาม</th>
+          <th style="padding:10px; border:1px solid #e5e7eb; width:130px;">ดำเนินการ</th>
+        </tr>
+      </thead>
+      <tbody>${rowsHtml}</tbody>
+    </table>
+    <p style="font-size:12px; color:#777; line-height:1.6; margin-top:18px;">
+      อีเมลฉบับนี้เป็นการสรุปรายวันแบบอัตโนมัติ ระบบจะส่งเฉพาะรายการที่อยู่ในขั้นตอนของท่าน ณ เวลาที่ตรวจสอบเท่านั้น
+      และจะไม่ส่งรายการที่ถูกยกเลิก ถูกแทนที่ ถูกปฏิเสธ หรือมีลิงก์หมดอายุแล้ว
+    </p>
+  `;
+}
+
+function sendDailyPendingApprovalDigestEmail_(group, now) {
+  if (!group || !group.approverEmail || !Array.isArray(group.items) || group.items.length === 0) return false;
+  const subject = `🖊️ สรุปรายการรอลงนามประจำวัน: ${group.items.length} รายการ`;
+  const body = buildDailyPendingApprovalDigestEmailBody_(group, now || new Date());
+  MailApp.sendEmail({
+    to: group.approverEmail,
+    subject: subject,
+    htmlBody: createBaseEmailTemplate('สรุปรายการรอลงนามประจำวัน', body, EMAIL_THEME.primary),
+    name: 'Meeting Room System'
+  });
+  return true;
+}
+
+function updateDailyApprovalDigestNotificationFlags_(stepSheet, stepCols, sentItemsByStepKey) {
+  const now = new Date();
+  const keys = Object.keys(sentItemsByStepKey || {});
+  keys.forEach(key => {
+    const item = sentItemsByStepKey[key];
+    if (!item || !item.stepRowNo) return;
+    const notifyCount = parseInt(item.notifyCount, 10) || 0;
+    stepSheet.getRange(item.stepRowNo, stepCols.notifyCount).setValue(notifyCount + 1);
+    stepSheet.getRange(item.stepRowNo, stepCols.lastNotifiedAt).setValue(now);
+    if (stepCols.updatedAt) stepSheet.getRange(item.stepRowNo, stepCols.updatedAt).setValue(now);
+  });
+}
+
+function sendDailyPendingApprovalDigestAdminAlert_(issues) {
+  if (!issues || issues.length === 0) return false;
+  const recipients = getAdminNotificationRecipients_();
+  if (!recipients || !recipients.to) {
+    logAction('System', 'Daily Approval Digest Admin Alert Skipped', 'พบปัญหารายการรอลงนาม ' + issues.length + ' รายการ แต่ไม่พบอีเมล Admin');
+    return false;
+  }
+  const rows = issues.slice(0, DAILY_APPROVAL_DIGEST_MAX_ADMIN_ISSUE_ROWS).map((issue, index) => `
+    <tr>
+      <td style="padding:8px; border:1px solid #e5e7eb; text-align:center;">${index + 1}</td>
+      <td style="padding:8px; border:1px solid #e5e7eb;">${escapeHtml_(issue.code)}</td>
+      <td style="padding:8px; border:1px solid #e5e7eb;">${escapeHtml_(issue.bookingId || '-')}</td>
+      <td style="padding:8px; border:1px solid #e5e7eb;">${escapeHtml_(issue.approvalId || '-')}</td>
+      <td style="padding:8px; border:1px solid #e5e7eb; text-align:center;">${escapeHtml_(issue.stepNo || '-')}</td>
+      <td style="padding:8px; border:1px solid #e5e7eb;">${escapeHtml_(issue.message)}</td>
+    </tr>`).join('');
+  const hiddenCount = Math.max(0, issues.length - DAILY_APPROVAL_DIGEST_MAX_ADMIN_ISSUE_ROWS);
+  const body = `
+    <p style="font-size:15px; color:#333; line-height:1.7;">ระบบพบรายการรอลงนามบางรายการที่ไม่สามารถส่งอีเมลสรุปรายวันให้ผู้ลงนามได้ เนื่องจากไม่ผ่านเงื่อนไขความปลอดภัยหรือข้อมูลไม่สมบูรณ์</p>
+    <table style="width:100%; border-collapse:collapse; font-size:13px;">
+      <thead>
+        <tr style="background:#f3f4f6;">
+          <th style="padding:8px; border:1px solid #e5e7eb;">#</th>
+          <th style="padding:8px; border:1px solid #e5e7eb;">Code</th>
+          <th style="padding:8px; border:1px solid #e5e7eb;">Booking ID</th>
+          <th style="padding:8px; border:1px solid #e5e7eb;">Approval ID</th>
+          <th style="padding:8px; border:1px solid #e5e7eb;">Step</th>
+          <th style="padding:8px; border:1px solid #e5e7eb;">รายละเอียด</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+    ${hiddenCount > 0 ? `<p style="font-size:13px; color:#777;">ยังมีรายการเพิ่มเติมอีก ${hiddenCount} รายการ กรุณาตรวจสอบ ApprovalLogs และชีท ApprovalSteps/ApprovalFlow เพิ่มเติม</p>` : ''}
+    <p style="font-size:12px; color:#777; line-height:1.6;">ระบบไม่ส่งลิงก์ลงนามให้ผู้ลงนามในรายการเหล่านี้ เพื่อป้องกันการใช้ลิงก์ผิดสถานะ ลิงก์หมดอายุ หรือข้อมูล Workflow ไม่สอดคล้องกัน</p>
+  `;
+  const options = {
+    to: recipients.to,
+    subject: `⚠️ ระบบจองห้อง: พบรายการรอลงนามที่ต้องตรวจสอบ ${issues.length} รายการ`,
+    htmlBody: createBaseEmailTemplate('รายการรอลงนามที่ต้องตรวจสอบ', body, EMAIL_THEME.warning),
+    name: 'Meeting Room System'
+  };
+  if (recipients.cc) options.cc = recipients.cc;
+  MailApp.sendEmail(options);
+  logAction('System', 'Daily Approval Digest Admin Alert', 'จำนวนรายการที่ต้องตรวจสอบ: ' + issues.length);
+  return true;
+}
+
+// ฟังก์ชันหลักสำหรับ Trigger รายวัน: ส่งอีเมลสรุปรายการรอลงนาม 1 ฉบับต่อผู้ลงนาม 1 คน
+function sendDailyPendingApprovalDigest() {
+  ensureDatabaseSchema_();
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(15000)) {
+    logAction('System', 'Daily Approval Digest Skipped', 'ไม่สามารถขอ Lock ได้ อาจมี Trigger หรือผู้ดูแลระบบรันพร้อมกัน');
+    return { success: false, reason: 'LOCK_UNAVAILABLE', sentEmails: 0, sentItems: 0 };
+  }
+
+  try {
+    const digest = getPendingApprovalDigestData_();
+    const groupKeys = Object.keys(digest.groups).sort();
+    const sentItemsByStepKey = {};
+    const failedGroups = [];
+    let sentEmails = 0;
+    let sentItems = 0;
+
+    groupKeys.forEach(key => {
+      const group = digest.groups[key];
+      try {
+        sendDailyPendingApprovalDigestEmail_(group, digest.now);
+        sentEmails++;
+        sentItems += group.items.length;
+        group.items.forEach(item => {
+          if (!sentItemsByStepKey[item.stepKey]) sentItemsByStepKey[item.stepKey] = item;
+          logApproval_(item.approvalId, item.bookingId, 'SEND_DAILY_APPROVAL_DIGEST', 'System', group.approverEmail, item.stepNo, 'ส่งอีเมลสรุปรายวันให้ผู้ลงนาม: ' + group.approverEmail);
+        });
+      } catch (mailError) {
+        failedGroups.push({ email: group.approverEmail, message: mailError.message });
+        logAction('System', 'Daily Approval Digest Email Error', group.approverEmail + ' | ' + mailError.message);
+      }
+    });
+
+    updateDailyApprovalDigestNotificationFlags_(digest.stepSheet, digest.stepCols, sentItemsByStepKey);
+    if (digest.issues.length > 0) {
+      try { sendDailyPendingApprovalDigestAdminAlert_(digest.issues); } catch (adminAlertError) { logAction('System', 'Daily Approval Digest Admin Alert Error', adminAlertError.message); }
+    }
+
+    logAction('System', 'Daily Approval Digest Completed', `ส่งอีเมล ${sentEmails} ฉบับ | รายการ ${sentItems} รายการ | ปัญหาที่ต้องตรวจ ${digest.issues.length} รายการ | ส่งไม่สำเร็จ ${failedGroups.length} กลุ่ม`);
+    return {
+      success: failedGroups.length === 0,
+      sentEmails: sentEmails,
+      sentItems: sentItems,
+      groups: groupKeys.length,
+      issues: digest.issues.length,
+      skipped: digest.skipped,
+      failedGroups: failedGroups
+    };
+  } catch (e) {
+    logAction('System', 'Daily Approval Digest Fatal Error', e.message);
+    throw e;
+  } finally {
+    try { lock.releaseLock(); } catch (e) {}
+  }
+}
+
+// ใช้รันทดสอบจาก Apps Script Editor เพื่อดูจำนวนรายการที่จะถูกส่ง โดยไม่ส่งอีเมลจริงและไม่อัปเดต Notify Count
+// หมายเหตุ: Apps Script Editor ไม่แสดง return value ใน Execution log โดยอัตโนมัติ จึงต้องพิมพ์ผลด้วย console.log/Logger.log
+function previewDailyPendingApprovalDigest() {
+  const digest = getPendingApprovalDigestData_();
+  const groups = Object.keys(digest.groups).sort().map(key => ({
+    approverEmail: digest.groups[key].approverEmail,
+    approverName: digest.groups[key].approverName,
+    itemCount: digest.groups[key].items.length,
+    items: digest.groups[key].items.map(item => ({
+      bookingId: item.bookingId,
+      approvalId: item.approvalId,
+      stepNo: item.stepNo,
+      stepName: item.stepName,
+      topic: item.topic,
+      roomName: item.roomName,
+      useDate: item.useDate,
+      useTime: item.useTime,
+      tokenExpireText: item.tokenExpireText
+    }))
+  }));
+  const result = {
+    generatedAt: Utilities.formatDate(new Date(), DAILY_APPROVAL_DIGEST_TIMEZONE, 'yyyy-MM-dd HH:mm:ss'),
+    groupCount: groups.length,
+    itemCount: groups.reduce((sum, group) => sum + group.itemCount, 0),
+    issueCount: digest.issues.length,
+    groups: groups,
+    issues: digest.issues,
+    skipped: digest.skipped
+  };
+
+  const lines = [];
+  lines.push('===== PREVIEW: Daily Pending Approval Digest =====');
+  lines.push('Generated at: ' + result.generatedAt + ' (' + DAILY_APPROVAL_DIGEST_TIMEZONE + ')');
+  lines.push('Approver groups: ' + result.groupCount);
+  lines.push('Pending items to email: ' + result.itemCount);
+  lines.push('Issues requiring Admin review: ' + result.issueCount);
+  lines.push('Skipped counters: ' + JSON.stringify(result.skipped));
+
+  if (result.groupCount === 0) {
+    lines.push('No email will be sent in the current preview. This can be normal when there is no current PENDING approval step, every pending step was already notified today, the booking is not Pending Approval, the token expired, or the flow/step is not the current active step.');
+  } else {
+    result.groups.forEach((group, groupIndex) => {
+      lines.push('');
+      lines.push('Group ' + (groupIndex + 1) + ': ' + group.approverName + ' <' + group.approverEmail + '> | items=' + group.itemCount);
+      group.items.forEach((item, itemIndex) => {
+        lines.push('  ' + (itemIndex + 1) + ') ' + item.bookingId + ' | ' + item.approvalId + ' | Step ' + item.stepNo + ' | ' + item.roomName + ' | ' + item.useDate + ' ' + item.useTime + ' | ' + item.topic + ' | expires ' + item.tokenExpireText);
+      });
+    });
+  }
+
+  if (result.issues.length > 0) {
+    lines.push('');
+    lines.push('Issues:');
+    result.issues.slice(0, 50).forEach((issue, index) => {
+      lines.push('  ' + (index + 1) + ') ' + issue.code + ' | Booking=' + (issue.bookingId || '-') + ' | Approval=' + (issue.approvalId || '-') + ' | Step=' + (issue.stepNo || '-') + ' | ' + issue.message);
+    });
+    if (result.issues.length > 50) lines.push('  ... and ' + (result.issues.length - 50) + ' more issue(s)');
+  }
+
+  const output = lines.join('\n');
+  console.log(output);
+  Logger.log(output);
+  return result;
+}
+
+// ใช้สร้าง Trigger รายวันสำหรับระบบสรุปรายการรอลงนาม หลังตรวจ preview และทดสอบ manual แล้ว
+function createDailyPendingApprovalDigestTrigger() {
+  deleteDailyPendingApprovalDigestTriggers();
+  deleteLegacyPendingApprovalReminderTriggers();
+  ScriptApp.newTrigger('sendDailyPendingApprovalDigest')
+    .timeBased()
+    .atHour(DAILY_APPROVAL_DIGEST_TRIGGER_HOUR)
+    .nearMinute(DAILY_APPROVAL_DIGEST_TRIGGER_MINUTE)
+    .everyDays(1)
+    .inTimezone(DAILY_APPROVAL_DIGEST_TIMEZONE)
+    .create();
+  logAction('System', 'Create Daily Approval Digest Trigger', 'ตั้ง Trigger รายวันสำหรับ sendDailyPendingApprovalDigest เรียบร้อย');
+  return { success: true, functionName: 'sendDailyPendingApprovalDigest', hour: DAILY_APPROVAL_DIGEST_TRIGGER_HOUR, minute: DAILY_APPROVAL_DIGEST_TRIGGER_MINUTE };
+}
+
+function deleteDailyPendingApprovalDigestTriggers() {
+  const triggers = ScriptApp.getProjectTriggers();
+  let deleted = 0;
+  triggers.forEach(trigger => {
+    if (trigger.getHandlerFunction && trigger.getHandlerFunction() === 'sendDailyPendingApprovalDigest') {
+      ScriptApp.deleteTrigger(trigger);
+      deleted++;
+    }
+  });
+  if (deleted > 0) logAction('System', 'Delete Daily Approval Digest Triggers', 'ลบ Trigger เดิมของ sendDailyPendingApprovalDigest จำนวน ' + deleted + ' รายการ');
+  return { success: true, deleted: deleted };
+}
+
+
+function deleteLegacyPendingApprovalReminderTriggers() {
+  const triggers = ScriptApp.getProjectTriggers();
+  let deleted = 0;
+  triggers.forEach(trigger => {
+    if (trigger.getHandlerFunction && trigger.getHandlerFunction() === 'sendPendingApprovalReminders') {
+      ScriptApp.deleteTrigger(trigger);
+      deleted++;
+    }
+  });
+  if (deleted > 0) logAction('System', 'Delete Legacy Pending Approval Reminder Triggers', 'ลบ Trigger เดิมของ sendPendingApprovalReminders จำนวน ' + deleted + ' รายการ เพื่อป้องกันการส่งซ้ำกับ Daily Digest');
+  return { success: true, deleted: deleted };
 }
 
 function sendPendingApprovalReminders() {

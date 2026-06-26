@@ -4,6 +4,39 @@
   var allRooms = []; 
   var currentUser = null; 
   var currentSheetData = {}; 
+  var isBookingFlowBusy = false;
+  var isSubmittingBooking = false;
+
+  function setBookingFlowBusy(isBusy) {
+    isBookingFlowBusy = !!isBusy;
+    document.body.classList.toggle('booking-flow-busy', isBookingFlowBusy);
+  }
+
+  function resetBookingFlowState() {
+    isSubmittingBooking = false;
+    setBookingFlowBusy(false);
+  }
+
+  function showBookingStepLoading(title, html) {
+    Swal.fire({
+      title: title || 'ระบบกำลังดำเนินการ',
+      html: html || 'กรุณารอสักครู่...',
+      icon: 'info',
+      allowOutsideClick: false,
+      allowEscapeKey: false,
+      showConfirmButton: false,
+      didOpen: () => { Swal.showLoading(); }
+    });
+  }
+
+  function showBusyWarning() {
+    Swal.fire({
+      title: 'ระบบกำลังดำเนินการ',
+      text: 'กรุณารอให้ขั้นตอนปัจจุบันเสร็จสิ้นก่อน เพื่อป้องกันการส่งข้อมูลซ้ำ',
+      icon: 'info',
+      confirmButtonColor: '#0d6efd'
+    });
+  }
 
   function getSessionToken() {
     return currentUser && currentUser.token ? currentUser.token : '';
@@ -268,6 +301,10 @@
   // --- 5. Booking Actions (Save/Edit/Cancel) ---
 
 function openBookingModal(dateStr) {
+    if (isBookingFlowBusy || isSubmittingBooking) {
+      showBusyWarning();
+      return;
+    }
     document.getElementById('bookingForm').reset();
     document.getElementById('bookingId').value = '';
     document.getElementById('isEdit').value = 'false';
@@ -324,6 +361,10 @@ function openBookingModal(dateStr) {
   }
 
   function openEditBooking(event) {
+    if (isBookingFlowBusy || isSubmittingBooking) {
+      showBusyWarning();
+      return;
+    }
     const props = event.extendedProps || {};
     document.getElementById('bookingId').value = event.id;
     document.getElementById('isEdit').value = 'true';
@@ -386,6 +427,11 @@ function toBase64(file) {
 
 async function handleFormSubmit(e) {
     e.preventDefault();
+
+    if (isBookingFlowBusy || isSubmittingBooking) {
+        showBusyWarning();
+        return;
+    }
 
     const topic = document.getElementById('topic').value.trim();
     const requester = document.getElementById('requester').value.trim();
@@ -450,7 +496,15 @@ async function handleFormSubmit(e) {
             return;
         }
         fileName = file.name;
-        base64File = await toBase64(file);
+        try {
+            showBookingStepLoading('กำลังอ่านไฟล์ผังจัดโต๊ะ', 'กรุณารอสักครู่ ระบบกำลังเตรียมไฟล์แนบก่อนเข้าสู่ขั้นตอนยืนยันการจอง...');
+            base64File = await toBase64(file);
+            Swal.close();
+        } catch (fileReadError) {
+            Swal.close();
+            Swal.fire('อ่านไฟล์แนบไม่สำเร็จ', 'กรุณาเลือกไฟล์ใหม่อีกครั้ง หรือเปลี่ยนเป็นไฟล์รูปภาพ/PDF ขนาดไม่เกิน 2MB', 'error');
+            return;
+        }
     }
 
     const formatDateTime = (dateObj) => {
@@ -490,6 +544,15 @@ async function handleFormSubmit(e) {
         width: '500px'
     }).then((result) => {
         if (result.isConfirmed) {
+            if (isBookingFlowBusy || isSubmittingBooking) {
+                showBusyWarning();
+                return;
+            }
+            setBookingFlowBusy(true);
+            showBookingStepLoading(
+                'กำลังตรวจสอบข้อมูลการจอง',
+                'ระบบกำลังตรวจสอบรายการที่อาจซ้ำและเตรียมหน้าลงลายมือชื่อผู้จอง<br><span class="text-muted small">กรุณารอสักครู่ และอย่าปิดหน้านี้</span>'
+            );
             checkDuplicateBeforeSignature(base64File, fileName);
         }
     });
@@ -543,11 +606,20 @@ async function handleFormSubmit(e) {
           confirmButtonText: 'ยืนยันว่าต้องการจองเพิ่ม',
           cancelButtonText: 'กลับไปตรวจสอบ'
         }).then(r => {
-          if (r.isConfirmed) openSignature();
+          if (r.isConfirmed) {
+            showBookingStepLoading(
+              'กำลังเตรียมหน้าลงลายมือชื่อผู้จอง',
+              'กรุณารอสักครู่ ระบบกำลังเปิดขั้นตอนถัดไป...'
+            );
+            setTimeout(openSignature, 80);
+          } else {
+            resetBookingFlowState();
+          }
         });
       })
-      .withFailureHandler(() => {
+      .withFailureHandler((err) => {
         // หากตรวจรายการซ้ำไม่สำเร็จ ไม่ควรทำให้การจองล้มเหลว ให้ดำเนินต่อ แต่ server ยังตรวจเวลาชนจริงใน saveBooking อยู่
+        console.warn('Duplicate warning check failed; continue to signature step.', err);
         showSignatureDialogAndSubmit(base64File, fileName);
       })
       .getSimilarBookingWarningForForm(duplicatePayload);
@@ -627,17 +699,27 @@ async function handleFormSubmit(e) {
     }).then((sigResult) => {
         if (sigResult.isConfirmed) {
             submitToServer(base64File, fileName, sigResult.value);
+        } else {
+            resetBookingFlowState();
         }
     });
   }
 
   function submitToServer(base64File = '', fileName = '', signatureBase64 = '') {
-    const btn = document.getElementById('btnSubmit');
-    if (btn.disabled) return;
-    const originalText = btn.innerText;
+    if (isSubmittingBooking) {
+      showBusyWarning();
+      return;
+    }
+    isSubmittingBooking = true;
+    setBookingFlowBusy(true);
 
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> กำลังบันทึก...';
+    const btn = document.getElementById('btnSubmit');
+    const originalText = btn ? btn.innerText : '';
+
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> กำลังบันทึก...';
+    }
 
     Swal.fire({
         title: 'กำลังสร้างเอกสารและบันทึกข้อมูล...',
@@ -701,13 +783,19 @@ async function handleFormSubmit(e) {
 
         calendar.refetchEvents();
         if (currentUser) loadDashboardData(false);
-        btn.disabled = false;
-        btn.innerText = originalText;
+        if (btn) {
+          btn.disabled = false;
+          btn.innerText = originalText;
+        }
+        resetBookingFlowState();
       })
       .withFailureHandler(function(error) {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerText = originalText;
+        }
+        resetBookingFlowState();
         handleServerError(error);
-        btn.disabled = false;
-        btn.innerText = originalText;
       })
       .saveBooking(formData, getSessionToken());
   }

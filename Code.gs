@@ -393,8 +393,30 @@ function getSimilarActiveBookings_(params) {
   return matches.sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()).slice(0, 10);
 }
 
+/**
+ * แปลงข้อมูลรายการจองที่คล้ายกันให้อยู่ในรูปแบบที่ google.script.run ส่งกลับได้อย่างปลอดภัย
+ * Date object ไม่สามารถใช้เป็นค่าตอบกลับของ HTML Service ได้ จึงแปลงเป็น ISO string ก่อนเสมอ
+ */
+function serializeSimilarBookingMatchForClient_(match) {
+  const source = match || {};
+  const startDate = new Date(source.start);
+  const endDate = new Date(source.end);
+  return {
+    bookingId: normalizeText_(source.bookingId),
+    topic: normalizeText_(source.topic),
+    roomName: normalizeText_(source.roomName),
+    requester: normalizeText_(source.requester),
+    start: isNaN(startDate.getTime()) ? '' : startDate.toISOString(),
+    end: isNaN(endDate.getTime()) ? '' : endDate.toISOString(),
+    useDateTime: normalizeText_(source.useDateTime),
+    status: normalizeText_(source.status),
+    statusLabel: normalizeText_(source.statusLabel)
+  };
+}
+
 function getSimilarBookingWarningForForm(formObject) {
-  const matches = getSimilarActiveBookings_(formObject || {});
+  const matches = getSimilarActiveBookings_(formObject || {})
+    .map(serializeSimilarBookingMatchForClient_);
   if (matches.length === 0) return { hasSimilar: false, matches: [], message: '' };
   const message = 'พบรายการจองที่มีหัวข้อ ผู้จอง และห้องเดียวกันอยู่แล้ว ' + matches.length + ' รายการ กรุณาตรวจสอบว่าเป็นการจองเพิ่มอีกวันจริง ไม่ใช่การส่งซ้ำโดยไม่ตั้งใจ';
   return { hasSimilar: true, matches: matches, message: message };
@@ -3596,6 +3618,413 @@ function supersedeApprovalFlowsForBooking_(bookingId, reason, actor, keepApprova
   }
 }
 
+
+/**
+ * Returns every ApprovalFlow row for one booking, ordered by sheet row.
+ * This helper is used only by the Admin resume/reset operation.
+ */
+function getApprovalFlowRecordsForBooking_(bookingId) {
+  ensureDatabaseSchema_();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEET_APPROVAL_FLOW);
+  const cols = getApprovalFlowCols_(sheet);
+  const rows = sheet.getDataRange().getValues();
+  const safeBookingId = normalizeText_(bookingId);
+  const records = [];
+
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (normalizeText_(getCell_(row, cols.bookingId)) !== safeBookingId) continue;
+    const approvalId = normalizeText_(getCell_(row, cols.approvalId));
+    if (!approvalId) continue;
+    records.push({
+      sheet: sheet,
+      cols: cols,
+      rowNo: i + 1,
+      row: row,
+      approvalId: approvalId,
+      bookingId: safeBookingId,
+      status: normalizeText_(getCell_(row, cols.overallStatus)),
+      reason: normalizeText_(getCell_(row, cols.reason)),
+      createdAt: getCell_(row, cols.createdAt),
+      updatedAt: getCell_(row, cols.updatedAt)
+    });
+  }
+  return records;
+}
+
+/**
+ * Returns editable ApprovalSteps records for one approval.
+ */
+function getApprovalStepRecordsForApproval_(approvalId) {
+  ensureDatabaseSchema_();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEET_APPROVAL_STEPS);
+  const cols = getApprovalStepCols_(sheet);
+  const rows = sheet.getDataRange().getValues();
+  const safeApprovalId = normalizeText_(approvalId);
+  const records = [];
+
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (normalizeText_(getCell_(row, cols.approvalId)) !== safeApprovalId) continue;
+    records.push({
+      sheet: sheet,
+      cols: cols,
+      rowNo: i + 1,
+      row: row,
+      approvalId: safeApprovalId,
+      bookingId: normalizeText_(getCell_(row, cols.bookingId)),
+      stepNo: parseInt(getCell_(row, cols.stepNo), 10),
+      stepName: normalizeText_(getCell_(row, cols.stepName)),
+      approverRole: normalizeText_(getCell_(row, cols.approverRole)),
+      approverName: normalizeText_(getCell_(row, cols.approverName)),
+      approverEmail: normalizeText_(getCell_(row, cols.approverEmail)),
+      status: normalizeText_(getCell_(row, cols.status)),
+      signatureFileId: normalizeText_(getCell_(row, cols.signatureFileId)),
+      signatureImageUrl: normalizeText_(getCell_(row, cols.signatureImageUrl)),
+      signedAt: getCell_(row, cols.signedAt)
+    });
+  }
+  return records.sort((a, b) => a.stepNo - b.stepNo);
+}
+
+/**
+ * Validates a resumable flow and identifies the first genuinely unsigned step.
+ * Signed steps are never modified by the resume operation.
+ */
+function inspectResumableApprovalProgress_(flowRecord) {
+  const approvalId = normalizeText_(flowRecord && flowRecord.approvalId);
+  const bookingId = normalizeText_(flowRecord && flowRecord.bookingId);
+  const steps = getApprovalStepRecordsForApproval_(approvalId);
+  if (steps.length !== 3) {
+    throw new Error(`Approval ${approvalId} มีข้อมูลขั้นตอนลงนามไม่ครบ 3 ขั้น`);
+  }
+
+  const uniqueStepNos = new Set(steps.map(step => step.stepNo));
+  if (uniqueStepNos.size !== 3 || ![1, 2, 3].every(n => uniqueStepNos.has(n))) {
+    throw new Error(`Approval ${approvalId} มีเลขลำดับขั้นตอนซ้ำหรือไม่ครบ 1–3`);
+  }
+
+  let signedCount = 0;
+  let firstUnsignedStepNo = null;
+  let foundUnsigned = false;
+
+  steps.forEach(step => {
+    if (step.bookingId && bookingId && step.bookingId !== bookingId) {
+      throw new Error(`Approval ${approvalId} มี Booking ID ใน ApprovalSteps ไม่ตรงกับ ApprovalFlow`);
+    }
+
+    const status = normalizeText_(step.status);
+    const hasSignatureEvidence = !!(step.signatureFileId || step.signatureImageUrl || step.signedAt);
+
+    if (status === 'SIGNED') {
+      if (foundUnsigned) {
+        throw new Error(`Approval ${approvalId} มีลายเซ็นข้ามลำดับที่ขั้นตอน ${step.stepNo}`);
+      }
+      const signedAt = new Date(step.signedAt);
+      if (!step.signedAt || isNaN(signedAt.getTime()) || !(step.signatureFileId || step.signatureImageUrl)) {
+        throw new Error(`Approval ${approvalId} ขั้นตอน ${step.stepNo} ระบุ SIGNED แต่หลักฐานลายเซ็นหรือวันเวลาลงนามไม่ครบ`);
+      }
+      signedCount++;
+      return;
+    }
+
+    foundUnsigned = true;
+    if (firstUnsignedStepNo === null) firstUnsignedStepNo = step.stepNo;
+
+    const allowedUnsignedStatuses = normalizeText_(flowRecord.status) === 'SUPERSEDED'
+      ? ['PENDING', 'WAITING', 'SUPERSEDED']
+      : ['PENDING', 'WAITING'];
+    if (!allowedUnsignedStatuses.includes(status)) {
+      throw new Error(`Approval ${approvalId} ขั้นตอน ${step.stepNo} อยู่ในสถานะ ${status || '-'} ซึ่งไม่สามารถกู้คืนต่อโดยอัตโนมัติได้`);
+    }
+    if (hasSignatureEvidence) {
+      throw new Error(`Approval ${approvalId} ขั้นตอน ${step.stepNo} ยังไม่เป็น SIGNED แต่พบข้อมูลลายเซ็นค้างอยู่ กรุณาตรวจสอบข้อมูลก่อน`);
+    }
+  });
+
+  return {
+    approvalId: approvalId,
+    bookingId: bookingId,
+    signedCount: signedCount,
+    firstUnsignedStepNo: firstUnsignedStepNo,
+    allSigned: signedCount === 3,
+    steps: steps
+  };
+}
+
+function getFlowSortTime_(flowRecord) {
+  const updated = new Date(flowRecord && flowRecord.updatedAt);
+  if (!isNaN(updated.getTime())) return updated.getTime();
+  const created = new Date(flowRecord && flowRecord.createdAt);
+  if (!isNaN(created.getTime())) return created.getTime();
+  return parseInt(flowRecord && flowRecord.rowNo, 10) || 0;
+}
+
+/**
+ * Chooses the active flow with the greatest contiguous signed progress.
+ * A later row is used only as a tie-breaker.
+ */
+function selectResumableApprovalFlow_(bookingId) {
+  const flows = getApprovalFlowRecordsForBooking_(bookingId);
+  if (flows.length === 0) return { mode: 'CREATE_NEW', flow: null, progress: null, allFlows: [] };
+
+  const active = flows.filter(flow => isApprovalFlowPendingStatus_(flow.status));
+  const latestBookingUpdateBarrierRow = flows.reduce((maxRow, flow) => {
+    const reason = normalizeText_(flow.reason).toUpperCase();
+    return reason.indexOf('UPDATE_BOOKING') >= 0 ? Math.max(maxRow, flow.rowNo) : maxRow;
+  }, 0);
+  const recoverableSuperseded = flows.filter(flow => {
+    if (normalizeText_(flow.status) !== 'SUPERSEDED') return false;
+    if (flow.rowNo <= latestBookingUpdateBarrierRow) return false;
+    const reason = normalizeText_(flow.reason).toUpperCase();
+    // Reuse signatures only when the old flow was superseded by the former Admin reset command.
+    // A flow at or before the latest UPDATE_BOOKING barrier must never be revived because
+    // its signatures may refer to booking details that have since changed.
+    return reason.indexOf('ADMIN_CREATE_OR_RESET') >= 0 ||
+      reason.indexOf('ADMIN_CREATE_OR_RESUME_FROM_LATEST_STATE') >= 0 ||
+      reason.indexOf('ADMIN_RESUME_APPROVAL_WORKFLOW') >= 0;
+  });
+  const eligible = active.concat(recoverableSuperseded);
+
+  if (eligible.length === 0) {
+    const completed = flows
+      .filter(flow => normalizeText_(flow.status) === 'COMPLETED')
+      .sort((a, b) => getFlowSortTime_(b) - getFlowSortTime_(a) || b.rowNo - a.rowNo);
+    if (completed.length > 0) {
+      return { mode: 'ALREADY_COMPLETED', flow: completed[0], progress: null, allFlows: flows };
+    }
+    const latest = flows.slice().sort((a, b) => getFlowSortTime_(b) - getFlowSortTime_(a) || b.rowNo - a.rowNo)[0];
+    throw new Error(`ไม่พบ Workflow ที่กู้คืนต่อได้ สถานะล่าสุดคือ ${latest.status || '-'} และระบบจะไม่คืนลายเซ็นจาก Workflow ที่ถูกแทนที่เพราะข้อมูลการจองมีการแก้ไข`);
+  }
+
+  const candidates = [];
+  const validationErrors = [];
+  eligible.forEach(flow => {
+    try {
+      candidates.push({ flow: flow, progress: inspectResumableApprovalProgress_(flow) });
+    } catch (e) {
+      validationErrors.push(`${flow.approvalId}: ${e.message}`);
+    }
+  });
+  if (candidates.length === 0) {
+    throw new Error('ไม่พบ Workflow ที่มีโครงสร้างปลอดภัยพอสำหรับกู้คืน: ' + validationErrors.join(' | '));
+  }
+
+  candidates.sort((a, b) => {
+    if (b.progress.signedCount !== a.progress.signedCount) return b.progress.signedCount - a.progress.signedCount;
+    const aActive = isApprovalFlowPendingStatus_(a.flow.status) ? 1 : 0;
+    const bActive = isApprovalFlowPendingStatus_(b.flow.status) ? 1 : 0;
+    if (bActive !== aActive) return bActive - aActive;
+    const timeDiff = getFlowSortTime_(b.flow) - getFlowSortTime_(a.flow);
+    if (timeDiff !== 0) return timeDiff;
+    return b.flow.rowNo - a.flow.rowNo;
+  });
+
+  return {
+    mode: 'RESUME_EXISTING',
+    flow: candidates[0].flow,
+    progress: candidates[0].progress,
+    allFlows: flows
+  };
+}
+
+/**
+ * Supersedes only other active flows for the same booking.
+ * Completed/rejected/cancelled historical records and all signed evidence are preserved.
+ */
+function supersedeOtherPendingApprovalFlows_(bookingId, keepApprovalId, reason, actor) {
+  const flows = getApprovalFlowRecordsForBooking_(bookingId);
+  const safeKeepApprovalId = normalizeText_(keepApprovalId);
+  const safeReason = sanitizePlainText_(reason || 'กู้คืน Workflow โดย Admin', 1000);
+  let count = 0;
+
+  flows.forEach(flow => {
+    if (flow.approvalId === safeKeepApprovalId || !isApprovalFlowPendingStatus_(flow.status)) return;
+    flow.sheet.getRange(flow.rowNo, flow.cols.overallStatus).setValue('SUPERSEDED');
+    flow.sheet.getRange(flow.rowNo, flow.cols.updatedAt).setValue(new Date());
+    flow.sheet.getRange(flow.rowNo, flow.cols.reason).setValue(safeReason);
+
+    const steps = getApprovalStepRecordsForApproval_(flow.approvalId);
+    steps.forEach(step => {
+      if (!isApprovalStepOpenStatus_(step.status)) return;
+      step.sheet.getRange(step.rowNo, step.cols.status).setValue('SUPERSEDED');
+      step.sheet.getRange(step.rowNo, step.cols.updatedAt).setValue(new Date());
+    });
+
+    count++;
+    logApproval_(flow.approvalId, bookingId, 'SUPERSEDE_DUPLICATE_PENDING_FLOW', actor || 'System', '', '', safeReason);
+  });
+  return count;
+}
+
+function getApprovalPendingFlowStatusByStep_(stepNo) {
+  const map = {
+    1: 'PENDING_ROOM_OFFICER',
+    2: 'PENDING_BUILDING_GROUP',
+    3: 'PENDING_DEPUTY_DIRECTOR'
+  };
+  return map[parseInt(stepNo, 10)] || '';
+}
+
+/**
+ * Issues a fresh token for a step that is becoming active.
+ * This invalidates its previous link without touching any signature data.
+ */
+function activateApprovalStepWithFreshToken_(stepRecord, activatedAt) {
+  const step = stepRecord;
+  const now = activatedAt instanceof Date ? activatedAt : new Date();
+  const expireAt = new Date(now.getTime() + APPROVAL_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000);
+  const token = createApprovalToken_();
+
+  step.sheet.getRange(step.rowNo, step.cols.status).setValue('PENDING');
+  step.sheet.getRange(step.rowNo, step.cols.token).setValue(token);
+  step.sheet.getRange(step.rowNo, step.cols.tokenExpireAt).setValue(expireAt);
+  step.sheet.getRange(step.rowNo, step.cols.notifyCount).setValue(0);
+  step.sheet.getRange(step.rowNo, step.cols.lastNotifiedAt).clearContent();
+  step.sheet.getRange(step.rowNo, step.cols.updatedAt).setValue(now);
+  return { token: token, expireAt: expireAt };
+}
+
+/**
+ * Invalidates old links of future unsigned steps and keeps them waiting.
+ * They receive another fresh token only when their turn is activated.
+ */
+function resetFutureWaitingApprovalStep_(stepRecord, updatedAt) {
+  const step = stepRecord;
+  const now = updatedAt instanceof Date ? updatedAt : new Date();
+  step.sheet.getRange(step.rowNo, step.cols.status).setValue('WAITING');
+  step.sheet.getRange(step.rowNo, step.cols.token).setValue(createApprovalToken_());
+  step.sheet.getRange(step.rowNo, step.cols.tokenExpireAt).clearContent();
+  step.sheet.getRange(step.rowNo, step.cols.notifyCount).setValue(0);
+  step.sheet.getRange(step.rowNo, step.cols.lastNotifiedAt).clearContent();
+  step.sheet.getRange(step.rowNo, step.cols.updatedAt).setValue(now);
+}
+
+/**
+ * Starts a new flow only when none exists; otherwise resumes the most advanced
+ * pending flow from its first genuinely unsigned step.
+ */
+function resumeOrCreateApprovalWorkflowForBooking_(bookingId, actor, reason) {
+  ensureDatabaseSchema_();
+  const booking = getBookingRecordObject_(bookingId);
+  const bookingStatus = normalizeBookingStatus_(booking.status);
+  if (bookingStatus === BOOKING_STATUS.CANCELLED) throw new Error('รายการถูกยกเลิกแล้ว ไม่สามารถเริ่มหรือกู้คืน Workflow ได้');
+  if (bookingStatus === BOOKING_STATUS.REJECTED) throw new Error('รายการนี้ถูกปฏิเสธแล้ว ไม่สามารถกู้คืน Workflow เดิมได้');
+
+  const selection = selectResumableApprovalFlow_(bookingId);
+  if (selection.mode === 'CREATE_NEW') {
+    const created = createApprovalFlowForBooking_(bookingId, actor || 'System', reason || 'ADMIN_CREATE');
+    if (!created || !created.created) throw new Error((created && (created.error || created.message)) || 'สร้างกระบวนการลงนามใหม่ไม่สำเร็จ');
+    markBookingPendingApproval_(bookingId, 'เริ่มกระบวนการลงนามเอกสาร: ' + created.approvalId);
+    return Object.assign({}, created, {
+      action: 'CREATED_NEW',
+      resumed: false,
+      emailSent: true,
+      message: 'สร้าง Workflow ใหม่และส่งอีเมลให้ผู้ลงนามขั้นตอนที่ 1 แล้ว'
+    });
+  }
+
+  if (selection.mode === 'ALREADY_COMPLETED') {
+    return {
+      created: false,
+      resumed: false,
+      completed: true,
+      action: 'ALREADY_COMPLETED',
+      approvalId: selection.flow.approvalId,
+      message: 'เอกสารฉบับนี้ลงนามครบและ Workflow เสร็จสมบูรณ์แล้ว จึงไม่มีขั้นตอนค้างให้กู้คืน'
+    };
+  }
+
+  const flow = selection.flow;
+  const progress = selection.progress;
+  const approvalId = flow.approvalId;
+
+  if (progress.allSigned) {
+    const supersededCount = supersedeOtherPendingApprovalFlows_(
+      bookingId,
+      approvalId,
+      'ปิด Workflow ที่เปิดซ้ำก่อนสร้างเอกสารฉบับสมบูรณ์จากลายเซ็นเดิม',
+      actor || 'Admin'
+    );
+    const finalResult = finalizeApprovalFlow_(approvalId, actor || 'Admin', '');
+    logApproval_(approvalId, bookingId, 'ADMIN_FINALIZE_EXISTING_SIGNED_FLOW', actor || 'Admin', '', 3, `ปิด Workflow ซ้ำ ${supersededCount} รายการ`);
+    return {
+      created: false,
+      resumed: true,
+      completed: true,
+      action: 'FINALIZED_EXISTING',
+      approvalId: approvalId,
+      finalPdfUrl: finalResult.url,
+      message: 'พบลายเซ็นครบทั้ง 3 ขั้น ระบบจึงสร้างเอกสารฉบับสมบูรณ์จากข้อมูลเดิมเรียบร้อยแล้ว'
+    };
+  }
+
+  const currentStepNo = progress.firstUnsignedStepNo;
+  const currentStep = progress.steps.find(step => step.stepNo === currentStepNo);
+  if (!currentStep) throw new Error('ไม่พบขั้นตอนที่ต้องกู้คืน');
+  if (!isValidEmail_(currentStep.approverEmail)) {
+    throw new Error(`อีเมลผู้ลงนามขั้นตอนที่ ${currentStepNo} ไม่ถูกต้อง กรุณาแก้ไขข้อมูลผู้ลงนามก่อนกู้คืน Workflow`);
+  }
+
+  const now = new Date();
+  activateApprovalStepWithFreshToken_(currentStep, now);
+  progress.steps.filter(step => step.stepNo > currentStepNo).forEach(step => resetFutureWaitingApprovalStep_(step, now));
+
+  const flowStatus = getApprovalPendingFlowStatusByStep_(currentStepNo);
+  if (!flowStatus) throw new Error('ไม่สามารถกำหนดสถานะ Workflow สำหรับขั้นตอนที่ ' + currentStepNo);
+  flow.sheet.getRange(flow.rowNo, flow.cols.currentStep).setValue(currentStepNo);
+  flow.sheet.getRange(flow.rowNo, flow.cols.currentApproverRole).setValue(currentStep.stepName);
+  flow.sheet.getRange(flow.rowNo, flow.cols.currentApproverEmail).setValue(currentStep.approverEmail);
+  flow.sheet.getRange(flow.rowNo, flow.cols.overallStatus).setValue(flowStatus);
+  flow.sheet.getRange(flow.rowNo, flow.cols.updatedAt).setValue(now);
+
+  const supersededCount = supersedeOtherPendingApprovalFlows_(
+    bookingId,
+    approvalId,
+    'ปิด Workflow ที่เปิดซ้ำหลัง Admin กู้คืน Workflow จากสถานะล่าสุด',
+    actor || 'Admin'
+  );
+
+  markBookingPendingApproval_(bookingId, `กู้คืน Workflow ${approvalId} ต่อจากขั้นตอนที่ ${currentStepNo}`);
+  logApproval_(
+    approvalId,
+    bookingId,
+    'ADMIN_RESUME_APPROVAL_WORKFLOW',
+    actor || 'Admin',
+    '',
+    currentStepNo,
+    `คงลายเซ็นเดิม ${progress.signedCount} ขั้น | ออก Token ใหม่สำหรับขั้น ${currentStepNo} | ปิด Workflow ซ้ำ ${supersededCount} รายการ`
+  );
+
+  let emailSent = false;
+  let warning = '';
+  try {
+    sendApprovalRequestEmail_(approvalId, currentStepNo);
+    emailSent = true;
+  } catch (emailError) {
+    warning = 'สร้างลิงก์ใหม่สำเร็จแล้ว แต่ส่งอีเมลไม่สำเร็จ: ' + emailError.message;
+    logApproval_(approvalId, bookingId, 'ADMIN_RESUME_EMAIL_ERROR', actor || 'Admin', '', currentStepNo, warning);
+  }
+
+  return {
+    created: false,
+    resumed: true,
+    completed: false,
+    action: 'RESUMED_EXISTING',
+    approvalId: approvalId,
+    currentStep: currentStepNo,
+    signedStepsPreserved: progress.signedCount,
+    supersededDuplicateFlows: supersededCount,
+    emailSent: emailSent,
+    warning: warning,
+    message: emailSent
+      ? `กู้คืน Workflow จากขั้นตอนที่ ${currentStepNo} และส่งลิงก์ใหม่ให้ผู้ลงนามแล้ว`
+      : warning
+  };
+}
+
 function startApprovalWorkflowSafely_(bookingId, actor, reason) {
   try {
     const result = createApprovalFlowForBooking_(bookingId, actor || 'System', reason || 'AUTO');
@@ -3928,13 +4357,21 @@ function advanceApprovalStep_(approvalId, completedStepNo, actorName, actorEmail
     const data = stepSheet.getDataRange().getValues();
     for (let i = 1; i < data.length; i++) {
       if (normalizeText_(getCell_(data[i], sCols.approvalId)) === approvalId && parseInt(getCell_(data[i], sCols.stepNo), 10) === nextStep) {
-        stepSheet.getRange(i + 1, sCols.status).setValue('PENDING');
-        stepSheet.getRange(i + 1, sCols.updatedAt).setValue(new Date());
+        const activatedAt = new Date();
+        const nextStepRecord = {
+          sheet: stepSheet,
+          cols: sCols,
+          rowNo: i + 1,
+          row: data[i],
+          stepNo: nextStep,
+          status: normalizeText_(getCell_(data[i], sCols.status))
+        };
+        activateApprovalStepWithFreshToken_(nextStepRecord, activatedAt);
         flow.sheet.getRange(flow.rowNo, c.currentStep).setValue(nextStep);
         flow.sheet.getRange(flow.rowNo, c.currentApproverRole).setValue(normalizeText_(getCell_(data[i], sCols.stepName)));
         flow.sheet.getRange(flow.rowNo, c.currentApproverEmail).setValue(normalizeText_(getCell_(data[i], sCols.approverEmail)));
         flow.sheet.getRange(flow.rowNo, c.overallStatus).setValue(statusMap[nextStep]);
-        flow.sheet.getRange(flow.rowNo, c.updatedAt).setValue(new Date());
+        flow.sheet.getRange(flow.rowNo, c.updatedAt).setValue(activatedAt);
         sendApprovalRequestEmail_(approvalId, nextStep);
         return { status: 'SIGNED', message: 'ลงนามเรียบร้อยแล้ว และระบบส่งต่อเอกสารไปยังลำดับถัดไปแล้ว', nextStep: nextStep };
       }
@@ -4895,9 +5332,20 @@ function resendCurrentApprovalLinkByAdmin(approvalId, sessionToken) {
 
 function adminCreateApprovalFlowForBooking(bookingId, sessionToken) {
   const user = requireUser_(sessionToken, ['Admin']);
-  const result = startApprovalWorkflowSafely_(bookingId, formatUserForLog_(user), 'ADMIN_CREATE_OR_RESET');
-  if (!result.created) throw new Error(result.error || result.message || 'สร้างกระบวนการลงนามใหม่ไม่สำเร็จ');
-  return result;
+  const safeBookingId = normalizeText_(bookingId);
+  if (!safeBookingId) throw new Error('กรุณาเลือกเลขที่การจอง');
+
+  const lock = LockService.getScriptLock();
+  try {
+    if (!lock.tryLock(15000)) throw new Error('ระบบกำลังดำเนินการ Workflow รายการอื่น กรุณารอสักครู่แล้วลองใหม่');
+    return resumeOrCreateApprovalWorkflowForBooking_(
+      safeBookingId,
+      formatUserForLog_(user),
+      'ADMIN_CREATE_OR_RESUME_FROM_LATEST_STATE'
+    );
+  } finally {
+    try { lock.releaseLock(); } catch (e) {}
+  }
 }
 
 function testAuth() {

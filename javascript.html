@@ -1478,17 +1478,28 @@ async function handleFormSubmit(e) {
           return;
       }
       Swal.fire({
-          title: 'เริ่ม/Reset กระบวนการลงนาม?',
-          html: `ระบบจะสร้าง Workflow ใหม่สำหรับเลขที่การจอง <b>${escapeHtml(bookingId)}</b> และส่งอีเมลไปยังผู้ลงนามขั้นตอนแรก`,
+          title: 'เริ่ม/กู้คืนกระบวนการลงนาม?',
+          html: `ระบบจะตรวจสถานะล่าสุดของเลขที่การจอง <b>${escapeHtml(bookingId)}</b><br><br><div class="text-start small">• คงลายเซ็นและข้อมูลของขั้นตอนที่ลงนามแล้วทั้งหมด<br>• ออกลิงก์ใหม่เฉพาะขั้นตอนถัดไปที่ค้างจริง<br>• ส่งอีเมลไปยังผู้ลงนามของขั้นตอนนั้นเท่านั้น</div>`,
           icon: 'warning',
           showCancelButton: true,
-          confirmButtonText: 'ยืนยัน'
+          confirmButtonText: 'เริ่ม/กู้คืน Workflow'
       }).then((result) => {
           if (!result.isConfirmed) return;
-          Swal.fire({title:'กำลังสร้าง Workflow...', allowOutsideClick:false, didOpen:()=>Swal.showLoading()});
+          Swal.fire({title:'กำลังตรวจและกู้คืน Workflow...', text:'กรุณารอสักครู่ ระบบกำลังรักษาข้อมูลลายเซ็นเดิมและออกลิงก์ใหม่ให้ขั้นตอนที่ค้าง', allowOutsideClick:false, didOpen:()=>Swal.showLoading()});
           google.script.run
             .withSuccessHandler((res) => {
-                Swal.fire('สำเร็จ', `สร้าง Workflow แล้ว: ${escapeHtml(res.approvalId || '')}`, 'success');
+                const details = [
+                  res.message || 'ดำเนินการ Workflow เรียบร้อยแล้ว',
+                  res.approvalId ? `Approval ID: ${res.approvalId}` : '',
+                  res.currentStep ? `ขั้นตอนที่ดำเนินการต่อ: ${res.currentStep}` : '',
+                  Number.isFinite(Number(res.signedStepsPreserved)) ? `ลายเซ็นเดิมที่คงไว้: ${Number(res.signedStepsPreserved)} ขั้น` : ''
+                ].filter(Boolean).map(escapeHtml).join('<br>');
+                const icon = res.warning ? 'warning' : 'success';
+                Swal.fire({
+                  title: res.warning ? 'กู้คืน Workflow แล้ว แต่มีคำเตือน' : 'ดำเนินการสำเร็จ',
+                  html: details,
+                  icon: icon
+                });
                 loadApprovalAdminOverview();
             })
             .withFailureHandler((err) => Swal.fire('เกิดข้อผิดพลาด', err.message, 'error'))

@@ -15,25 +15,25 @@
   <body>
     
     <a class="pn-skip" href="#pnMain">ข้ามไปยังเนื้อหา</a>
-    <header class="pn-topbar"><button type="button" class="pn-icon-btn" id="pnMenu" aria-controls="pnNav" aria-expanded="false" aria-label="เปิดเมนู"><i class="bi bi-list"></i></button><a class="pn-brand" href="#" onclick="pnShowView('calendar');return false"><span class="pn-mark"><i class="bi bi-calendar2-check"></i></span><span>PRONTERA <small>ระบบบริหารห้องประชุม</small></span></a><span class="pn-top-spacer"></span><span id="userInfoDisplay" style="display:none"></span><button id="btnLogin" class="btn btn-outline-primary btn-sm" onclick="openLoginModal()"><i class="bi bi-person-circle"></i> เข้าสู่ระบบเจ้าหน้าที่</button><button id="btnLogout" class="btn btn-outline-danger btn-sm" onclick="handleLogout()" style="display:none">ออกจากระบบ</button></header>
+    <header class="pn-topbar"><button type="button" class="pn-icon-btn" id="pnMenu" aria-controls="pnNav" aria-expanded="false" aria-label="เปิดเมนู"><i class="bi bi-list"></i></button><a class="pn-brand" href="#" data-pn-action="home"><span class="pn-mark"><i class="bi bi-calendar2-check"></i></span><span>PRONTERA <small>ระบบบริหารห้องประชุม</small></span></a><span class="pn-top-spacer"></span><span id="userInfoDisplay" style="display:none"></span><button id="btnLogin" class="btn btn-outline-primary btn-sm" data-pn-action="login"><i class="bi bi-person-circle"></i> เข้าสู่ระบบเจ้าหน้าที่</button><button id="btnLogout" class="btn btn-outline-danger btn-sm" data-pn-action="logout" style="display:none">ออกจากระบบ</button></header>
     <div class="pn-shell">
       <aside class="pn-nav" id="pnNav" aria-label="เมนูหลัก">
         <div class="pn-nav-label">WORKSPACE</div>
-        <button class="pn-nav-item active" type="button" data-view="calendar" onclick="pnShowView('calendar')"><i class="bi bi-grid"></i> ภาพรวมและปฏิทิน</button>
-        <button class="pn-nav-item" type="button" onclick="openBookingModal();pnCloseMenu()"><i class="bi bi-plus-square"></i> จองห้องประชุม</button>
-        <button class="pn-nav-item" type="button" onclick="pnOpenRecurring();pnCloseMenu()"><i class="bi bi-calendar-range"></i> วางแผนจองรายสัปดาห์</button>
-        <button class="pn-nav-item" type="button" onclick="pnOpenRoomDisplay();pnCloseMenu()"><i class="bi bi-display"></i> จอแสดงสถานะห้อง</button>
-        <button class="pn-nav-item" type="button" data-view="bookings" onclick="pnShowView('bookings')"><i class="bi bi-folder2-open"></i> คำขอของฉัน</button>
-        <button class="pn-nav-item" type="button" data-view="inbox" onclick="pnShowView('inbox')"><i class="bi bi-inbox"></i> ศูนย์อนุมัติ</button>
-        <button class="pn-nav-item" type="button" data-view="profile" onclick="pnShowView('profile')"><i class="bi bi-person-vcard"></i> โปรไฟล์และลายเซ็น</button>
-        <div id="dashboardMenuLi" style="display:none"><div class="pn-nav-label mt-4">OPERATIONS</div><button class="pn-nav-item" type="button" data-view="dashboard" onclick="pnShowView('dashboard')"><i class="bi bi-bar-chart-line"></i> ภาพรวมการบริหาร</button><button class="pn-nav-item" type="button" onclick="pronteraOpenOperations();pnCloseMenu()"><i class="bi bi-clipboard-check"></i> คิวจัดเตรียมห้อง</button><button class="pn-nav-item" type="button" onclick="pronteraOpenHealth();pnCloseMenu()"><i class="bi bi-heart-pulse"></i> สุขภาพระบบ</button><button class="pn-nav-item" type="button" onclick="pnOpenWorkerHealth();pnCloseMenu()"><i class="bi bi-hourglass-split"></i> สถานะ Worker</button></div>
-        <div id="adminMenuLi" style="display:none"><button type="button" class="pn-nav-item" onclick="openAdminPanel();pnCloseMenu()"><i class="bi bi-sliders"></i> ศูนย์ควบคุมระบบ</button><button type="button" class="pn-nav-item" onclick="pnOpenMaintenance();pnCloseMenu()"><i class="bi bi-tools"></i> ปิดห้องซ่อมบำรุง</button></div>
-        <div class="pn-nav-footer">PRONTERA · EXPERIENCE R2.1<br><small>Google Workspace</small></div>
+        <button class="pn-nav-item active" type="button" data-view="calendar"><i class="bi bi-grid"></i> ภาพรวมและปฏิทิน</button>
+        <button class="pn-nav-item" type="button" data-pn-action="book"><i class="bi bi-plus-square"></i> จองห้องประชุม</button>
+        <button class="pn-nav-item" type="button" data-pn-action="recurring"><i class="bi bi-calendar-range"></i> วางแผนจองรายสัปดาห์</button>
+        <button class="pn-nav-item" type="button" data-pn-action="display"><i class="bi bi-display"></i> จอแสดงสถานะห้อง</button>
+        <button class="pn-nav-item" type="button" data-view="bookings"><i class="bi bi-folder2-open"></i> คำขอของฉัน</button>
+        <button class="pn-nav-item" type="button" data-view="inbox"><i class="bi bi-inbox"></i> ศูนย์อนุมัติ</button>
+        <button class="pn-nav-item" type="button" data-view="profile"><i class="bi bi-person-vcard"></i> โปรไฟล์และลายเซ็น</button>
+        <div id="dashboardMenuLi" style="display:none"><div class="pn-nav-label mt-4">OPERATIONS</div><button class="pn-nav-item" type="button" data-view="dashboard"><i class="bi bi-bar-chart-line"></i> ภาพรวมการบริหาร</button><button class="pn-nav-item" type="button" data-pn-action="operations"><i class="bi bi-clipboard-check"></i> คิวจัดเตรียมห้อง</button><button class="pn-nav-item" type="button" data-pn-action="health"><i class="bi bi-heart-pulse"></i> สุขภาพระบบ</button><button class="pn-nav-item" type="button" data-pn-action="worker"><i class="bi bi-hourglass-split"></i> สถานะ Worker</button></div>
+        <div id="adminMenuLi" style="display:none"><button type="button" class="pn-nav-item" data-pn-action="admin"><i class="bi bi-sliders"></i> ศูนย์ควบคุมระบบ</button><button type="button" class="pn-nav-item" data-pn-action="maintenance"><i class="bi bi-tools"></i> ปิดห้องซ่อมบำรุง</button></div>
+        <div class="pn-nav-footer">PRONTERA · EXPERIENCE R2.2<br><small>Google Workspace</small></div>
       </aside>
-      <main class="pn-main" id="pnMain" tabindex="-1">
+      <main class="pn-main" id="pnMain" tabindex="-1"><div id="pnActionNotice" class="alert alert-warning d-flex align-items-center justify-content-between gap-2" role="alert" hidden><span></span><button type="button" id="pnDismissActionNotice" class="btn btn-outline-secondary btn-sm">ปิด</button></div>
         <section id="pnView-calendar" class="pn-view">
-          <div class="pn-calendar-head"><div><div class="pn-eyebrow">PRONTERA / ตารางการใช้งาน</div><h1>ปฏิทินห้องประชุม</h1><p>เลือกวันที่บนปฏิทิน หรือสร้างคำขอใหม่ · <span id="pnRoomCount">—</span> ห้องเปิดให้บริการ</p></div><button type="button" class="btn btn-primary pn-main-action" onclick="openBookingModal()"><i class="bi bi-plus-lg"></i> จองห้องประชุม</button></div>
-          <div class="pn-workgrid"><section class="pn-panel"><div class="pn-panel-head"><div><h2>ตารางการจอง</h2></div><label class="pn-filter-label" for="pnRoomFilter">กรองห้อง<select class="form-select form-select-sm" id="pnRoomFilter"><option value="">ทุกห้อง</option></select></label></div><div class="pn-legend"><span><i class="pn-dot approved"></i> อนุมัติแล้ว (สีตามห้อง)</span><span><i class="pn-dot pending"></i> รออนุมัติ</span><span><i class="pn-dot error"></i> ต้องตรวจสอบ</span></div><div id="pnCalendarNotice" role="status" class="pn-calendar-notice" hidden></div><div id="calendar" aria-label="ปฏิทินการจอง"><p class="p-3 text-muted">กำลังโหลดปฏิทิน...</p></div></section>
+          <div class="pn-calendar-head"><div><div class="pn-eyebrow">PRONTERA / ตารางการใช้งาน</div><h1>ปฏิทินห้องประชุม</h1><p>เลือกวันที่บนปฏิทิน หรือสร้างคำขอใหม่ · <span id="pnRoomCount">—</span> ห้องเปิดให้บริการ</p></div><button type="button" class="btn btn-primary pn-main-action" data-pn-action="book"><i class="bi bi-plus-lg"></i> จองห้องประชุม</button></div>
+          <div class="pn-workgrid"><section class="pn-panel"><div class="pn-panel-head"><div><h2>ตารางการจอง</h2></div><label class="pn-filter-label" for="pnRoomFilter">กรองห้อง<select class="form-select form-select-sm" id="pnRoomFilter"><option value="">ทุกห้อง</option></select></label></div><div class="pn-legend"><span><i class="pn-dot approved"></i> อนุมัติแล้ว (สีตามห้อง)</span><span><i class="pn-dot pending"></i> รออนุมัติ</span><span><i class="pn-dot error"></i> ต้องตรวจสอบ</span></div><div id="pnCalendarNotice" role="status" class="pn-calendar-notice" hidden></div><div id="pnCalendarLoading" class="px-3 pb-2 small text-muted" role="status" hidden>กำลังโหลดรายการจอง...</div><div id="calendar" aria-label="ปฏิทินการจอง"></div></section>
           <section class="pn-panel pn-rooms"><div class="pn-panel-head"><div><div class="pn-eyebrow">SPACES</div><h2>ห้องประชุม</h2></div></div><div id="roomListContainer" class="list-group list-group-flush"><div class="pn-empty" role="status">กำลังโหลดข้อมูลห้อง...</div></div></section></div>
         </section>
         <section id="pnView-bookings" class="pn-view" hidden><div class="pn-page-head"><div class="pn-eyebrow">MY REQUESTS</div><h1>คำขอของฉัน</h1><p>รายการที่ผูกกับบัญชี Google Workspace ของคุณ</p></div><button type="button" class="btn btn-outline-primary mb-3" onclick="pnLoadPersonal('bookings')"><i class="bi bi-arrow-clockwise"></i> โหลดล่าสุด</button><div id="pnBookings" class="pn-personal-grid" aria-live="polite"></div></section>
@@ -233,9 +233,11 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     
-    <?!= include('SignatureComponents'); ?>
     <?!= include('javascript'); ?>
-    <?!= include('Experience'); ?>
+    <script>
+      // Independent watchdog: visibly report a missing/broken main UI bundle instead of dead controls.
+      setTimeout(function(){if(!window.pronteraR22Booted){var n=document.getElementById('pnActionNotice');if(n){n.hidden=false;n.querySelector('span').textContent='ส่วนควบคุมหน้าเว็บไม่พร้อม กรุณาโหลดหน้าใหม่ หรือแจ้งผู้ดูแลระบบให้ตรวจไฟล์ javascript.html (R2.2)';}}},3500);
+    </script>
 
 
   </body>

@@ -1,5 +1,97 @@
 <script>
-  // Global Variables
+/** Shared UI for verified signature profiles and Workspace-backed tools. */
+function pronteraRpc(method,...args){
+  return new Promise((resolve,reject)=>{const runner=google.script.run.withSuccessHandler(resolve).withFailureHandler(reject);runner[method](...args);});
+}
+function pronteraEsc(value){return String(value??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));}
+function pronteraError(error){Swal.fire('ไม่สามารถดำเนินการได้',String(error?.message||error||'เกิดข้อผิดพลาด'),'error');}
+function pronteraLoading(title){Swal.fire({title,allowOutsideClick:false,allowEscapeKey:false,showConfirmButton:false,didOpen:()=>Swal.showLoading()});}
+/** Draw or import an image and normalize to PNG with bounded dimensions. */
+async function pronteraSignatureEditor(profile){
+  let dirty=false, loading=false, readError='', draw=false, generation=0;
+  const result=await Swal.fire({
+    title:profile.hasSignature?'เปลี่ยนลายเซ็นส่วนบุคคล':'สร้างลายเซ็นส่วนบุคคล',
+    html:`<div class="text-start small mb-2">บัญชี: <b>${pronteraEsc(profile.email)}</b><br>ลายเซ็นใหม่มีผลเฉพาะการลงนามครั้งถัดไป</div>
+      <canvas id="pronteraCanvas" width="640" height="240" style="width:100%;max-width:640px;height:auto;border:1px solid #b6c2d1;border-radius:8px;background:white;touch-action:none" aria-label="พื้นที่วาดลายเซ็น"></canvas>
+      <div class="d-flex gap-2 mt-2"><button type="button" id="pronteraClear" class="btn btn-outline-secondary btn-sm">ล้าง</button><label class="btn btn-outline-primary btn-sm">เลือกไฟล์ PNG/JPG<input type="file" id="pronteraImport" accept="image/png,image/jpeg" hidden></label></div><div id="pronteraImportStatus" class="small text-muted mt-2" role="status"></div>
+      <label class="d-flex align-items-start gap-2 mt-3 text-start small"><input type="checkbox" id="pronteraConsent" class="form-check-input">ข้าพเจ้ายืนยันว่าลายเซ็นนี้เป็นของข้าพเจ้า และยินยอมให้จัดเก็บเพื่อใช้ลงนามเมื่อข้าพเจ้ายืนยันในแต่ละครั้ง</label>`,
+    showCancelButton:true,confirmButtonText:'บันทึกลายเซ็น',cancelButtonText:'ยกเลิก',allowOutsideClick:false,
+    didOpen:()=>{
+      const c=document.getElementById('pronteraCanvas'),ctx=c.getContext('2d'),input=document.getElementById('pronteraImport'),status=document.getElementById('pronteraImportStatus');
+      ctx.lineWidth=4;ctx.lineCap='round';ctx.lineJoin='round';ctx.strokeStyle='#102e54';
+      const pos=e=>{const r=c.getBoundingClientRect();return [(e.clientX-r.left)*c.width/r.width,(e.clientY-r.top)*c.height/r.height];};
+      c.addEventListener('pointerdown',e=>{if(loading||e.button>0)return;e.preventDefault();draw=true;c.setPointerCapture(e.pointerId);ctx.beginPath();ctx.moveTo(...pos(e));});
+      c.addEventListener('pointermove',e=>{if(!draw)return;e.preventDefault();ctx.lineTo(...pos(e));ctx.stroke();dirty=true;});
+      ['pointerup','pointercancel','lostpointercapture'].forEach(event=>c.addEventListener(event,()=>{draw=false;}));
+      document.getElementById('pronteraClear').onclick=()=>{generation++;loading=false;readError='';dirty=false;ctx.clearRect(0,0,c.width,c.height);input.value='';status.textContent='';};
+      input.onchange=()=>{
+        const f=input.files[0],current=++generation; if(!f)return;
+        if(!['image/png','image/jpeg'].includes(f.type)||f.size>1048576){readError='กรุณาเลือก PNG/JPG ไม่เกิน 1 MB';status.textContent=readError;return;}
+        loading=true;readError='';status.textContent='กำลังอ่านรูปภาพ';const url=URL.createObjectURL(f),image=new Image();
+        image.onload=()=>{URL.revokeObjectURL(url);if(current!==generation)return;const scale=Math.min(c.width/image.width,c.height/image.height,1);if(!Number.isFinite(scale)||scale<=0){loading=false;readError='ภาพไม่ถูกต้อง';status.textContent=readError;return;}ctx.clearRect(0,0,c.width,c.height);ctx.drawImage(image,(c.width-image.width*scale)/2,(c.height-image.height*scale)/2,image.width*scale,image.height*scale);dirty=true;loading=false;status.textContent='นำเข้าภาพแล้ว';};
+        image.onerror=()=>{URL.revokeObjectURL(url);if(current===generation){loading=false;readError='อ่านภาพไม่สำเร็จ';status.textContent=readError;}};image.src=url;
+      };
+    },preConfirm:()=>{
+      if(loading||readError||!dirty||!document.getElementById('pronteraConsent').checked){Swal.showValidationMessage(readError||'กรุณาวาดหรือเลือกภาพและยืนยันความยินยอมก่อนบันทึก');return false;}
+      return document.getElementById('pronteraCanvas').toDataURL('image/png');
+    }
+  });
+  if(!result.isConfirmed)return null;
+  pronteraLoading('กำลังจัดเก็บลายเซ็น');
+  try{const p=await pronteraRpc('savePronteraSignatureProfile',result.value,profile.signatureId||'',true);Swal.close();return p;}catch(e){Swal.close();throw e;}
+}
+async function pronteraOpenProfile(){
+  try{
+    pronteraLoading('กำลังตรวจสอบบัญชี');const profile=await pronteraRpc('getPronteraSignatureProfile');Swal.close();
+    if(!profile.enabled){await Swal.fire('ลายเซ็นส่วนบุคคล',profile.available?'ตรวจสอบบัญชีสำเร็จ: '+profile.email+' — ยังไม่ได้เปิดใช้ลายเซ็นส่วนบุคคล':'ยังไม่ได้เปิดใช้ลายเซ็นส่วนบุคคล และไม่พบ Workspace Identity','info');return null;}
+    if(!profile.available){await Swal.fire('ไม่สามารถยืนยันบัญชี','กรุณาเปิดระบบด้วยบัญชี Google Workspace ของโรงเรียน','warning');return null;}
+    if(profile.hasSignature){const r=await Swal.fire({title:'ลายเซ็นส่วนบุคคล',html:`<div class="text-start">บัญชี: ${pronteraEsc(profile.email)}<br>สถานะ: พร้อมใช้งาน<br>เวอร์ชัน: ${pronteraEsc(profile.version)}</div>`,icon:'success',showCancelButton:true,confirmButtonText:'เปลี่ยนลายเซ็น',cancelButtonText:'ปิด'});if(!r.isConfirmed)return profile;}
+    const saved=await pronteraSignatureEditor(profile);if(saved)await Swal.fire('บันทึกเรียบร้อย','ลายเซ็นเวอร์ชัน '+saved.version+' พร้อมใช้งาน','success');return saved;
+  }catch(e){pronteraError(e);return null;}
+}
+/** Separate profile saving from explicit document-signing consent. */
+async function pronteraChooseSignature(profile){
+  let p=profile;
+  if(!p.hasSignature){p=await pronteraSignatureEditor(p);if(!p)return null;}
+  const r=await Swal.fire({title:'ยืนยันลงนามยื่นคำขอ',html:`<div class="text-start">ใช้ลายเซ็นส่วนบุคคล เวอร์ชัน ${pronteraEsc(p.version)}<br>บัญชี ${pronteraEsc(p.email)}<br>เมื่อยืนยัน ระบบจะนำลายเซ็นไปประทับในบันทึกข้อความฉบับนี้</div>`,icon:'question',showCancelButton:true,confirmButtonText:'ยืนยันและลงนาม',cancelButtonText:'กลับไปตรวจสอบ',allowOutsideClick:false});
+  return r.isConfirmed?p:null;
+}
+async function pronteraFindRooms(){
+  try{
+    if(document.getElementById('isEdit').value==='true'){Swal.fire('ค้นหาห้องว่าง','สำหรับแก้ไขรายการเดิม กรุณาเลือกจากปฏิทิน','info');return;}
+    const start=document.getElementById('startTime').value,end=document.getElementById('endTime').value,n=document.getElementById('headcount').value;
+    if(!start||!end||!n){Swal.fire('กรุณาระบุข้อมูล','เลือกเวลาเริ่มต้น เวลาสิ้นสุด และจำนวนผู้เข้าประชุมก่อนค้นหา','info');return;}
+    pronteraLoading('กำลังค้นหาห้องว่าง');const rooms=await pronteraRpc('getPronteraAvailableRooms',start,end,n);Swal.close();
+    if(!rooms.length){Swal.fire('ไม่พบห้องว่าง','ลองเปลี่ยนช่วงเวลาหรือจำนวนผู้เข้าประชุม','info');return;}
+    const options={};rooms.forEach(r=>{options[r.roomId]=r.roomName+' · '+(r.capacity||'ไม่ระบุ')+' คน'+(r.requireSetup?' · ต้องแนบผัง':'');});
+    const result=await Swal.fire({title:'เลือกห้องว่าง',input:'select',inputOptions:options,inputPlaceholder:'เลือกห้อง',showCancelButton:true,confirmButtonText:'เลือกห้อง',cancelButtonText:'ยกเลิก',inputValidator:v=>!v?'กรุณาเลือกห้อง':''});
+    if(result.isConfirmed){document.getElementById('roomId').value=result.value;updateRoomName();}
+  }catch(e){pronteraError(e);}
+}
+async function pronteraWorkspaceLogin(){
+  try{pronteraLoading('กำลังยืนยันบัญชี Workspace');const user=await pronteraRpc('loginPronteraWorkspace');currentUser=user;try{localStorage.setItem('mrbs_user',JSON.stringify(user));}catch(e){}updateUIState();const m=bootstrap.Modal.getInstance(document.getElementById('loginModal'));if(m)m.hide();await Swal.fire('เข้าสู่ระบบสำเร็จ',user.name,'success');loadDashboardData(false);}catch(e){pronteraError(e);}
+}
+function pronteraCards(rows,inbox){
+  if(!rows.length)return '<p class="text-muted">ไม่มีรายการ</p>';
+  return rows.map(r=>{const url=String(r.url||'');const link=inbox&&/^https:\/\/script\.google\.com\//.test(url)?`<a class="btn btn-primary btn-sm mt-2" href="${pronteraEsc(url)}" target="_blank" rel="noopener noreferrer">เปิดพิจารณา</a>`:inbox?'<div class="text-danger small">ลิงก์หมดอายุ กรุณาติดต่อเจ้าหน้าที่</div>':'';return `<div class="border rounded p-3 mb-2 text-start"><small class="text-muted">${pronteraEsc(r.id)}</small><div class="fw-bold">${pronteraEsc(r.topic)}</div><div class="small">${pronteraEsc(r.room)} · ${pronteraEsc(r.start)}</div><div class="small">${pronteraEsc(r.status||'ขั้นตอนที่ '+r.step)}${!inbox&&r.step?' · ขั้นตอน '+pronteraEsc(r.step):''}</div>${link}</div>`;}).join('');
+}
+async function pronteraOpenBookings(){try{pronteraLoading('กำลังโหลดคำขอ');const rows=await pronteraRpc('getPronteraMyBookings');await Swal.fire({title:'คำขอของฉัน',html:pronteraCards(rows,false),width:650,confirmButtonText:'ปิด'});}catch(e){pronteraError(e);}}
+async function pronteraOpenInbox(){try{pronteraLoading('กำลังโหลดเอกสาร');const rows=await pronteraRpc('getPronteraApprovalInbox');await Swal.fire({title:'เอกสารรอลงนาม',html:pronteraCards(rows,true),width:650,confirmButtonText:'ปิด'});}catch(e){pronteraError(e);}}
+const pronteraOpsLabels={WAITING_SETUP:'รอจัดเตรียม',IN_PROGRESS:'กำลังจัดเตรียม',READY:'พร้อมใช้งาน',COMPLETED:'เสร็จสิ้น'};
+async function pronteraOpenOperations(){
+  try{
+    pronteraLoading('กำลังโหลดคิวจัดห้อง');const rows=await pronteraRpc('getPronteraRoomOperations',getSessionToken());Swal.close();
+    if(!rows.length){Swal.fire('คิวจัดเตรียมห้อง','ไม่มีรายการอนุมัติในช่วงเวลาที่แสดง','info');return;}
+    const result=await Swal.fire({title:'คิวจัดเตรียมห้อง',width:760,html:'<div class="small text-muted mb-2">รายการอนุมัติแล้ว ช่วงเมื่อวานถึง 7 วันข้างหน้า (สูงสุด 100 รายการ)</div>'+rows.map((r,i)=>`<div class="border rounded p-3 mb-2 text-start"><div class="fw-bold">${pronteraEsc(r.room)} · ${pronteraEsc(r.topic)}</div><div class="small">${pronteraEsc(r.start)} · ${pronteraEsc(r.headcount)} คน</div><div class="small">${pronteraEsc(r.setupDetails||'ไม่มีรายละเอียดเพิ่มเติม')}</div>${r.layoutUrl&&/^https:\/\/drive\.google\.com\//.test(r.layoutUrl)?`<a href="${pronteraEsc(r.layoutUrl)}" target="_blank" rel="noopener noreferrer">เปิดผัง</a>`:''}<div class="mt-2"><label class="small" for="pronteraOps${i}">สถานะการจัดห้อง</label><select id="pronteraOps${i}" class="form-select form-select-sm">${Object.entries(pronteraOpsLabels).map(([k,v])=>`<option value="${k}" ${r.state===k?'selected':''}>${v}</option>`).join('')}</select></div></div>`).join(''),showCancelButton:true,confirmButtonText:'บันทึกสถานะที่เปลี่ยน',cancelButtonText:'ปิด',preConfirm:()=>rows.map((r,i)=>({...r,next:document.getElementById('pronteraOps'+i).value})).filter(r=>r.state!==r.next)});
+    if(!result.isConfirmed)return;const changes=result.value||[];if(!changes.length)return;
+    pronteraLoading('กำลังบันทึกสถานะ');let saved=0;try{for(const r of changes){await pronteraRpc('setPronteraRoomOperation',r.id,r.revision,r.state,r.next,getSessionToken());saved++;}}catch(e){throw Error('บันทึกแล้ว '+saved+' จาก '+changes.length+' รายการ: '+(e.message||e));}Swal.fire('บันทึกแล้ว',saved+' รายการ','success');
+  }catch(e){pronteraError(e);}
+}
+async function pronteraOpenHealth(){
+  try{pronteraLoading('กำลังตรวจสอบข้อมูล');const h=await pronteraRpc('getPronteraSystemHealth',getSessionToken());const labels={bookingCount:'รายการจองทั้งหมด',approvalError:'รายการต้องตรวจสอบ Workflow',duplicateBookingIds:'รหัสจองซ้ำ',multiplePendingFlows:'รายการที่มี Workflow ค้างซ้ำ',orphanFlows:'Workflow ที่ไม่พบ Booking',orphanSteps:'ขั้นลงนามที่ไม่พบ Workflow',expiredPendingTokens:'ลิงก์รอลงนามหมดอายุ'};await Swal.fire({title:'ตรวจสุขภาพข้อมูล',html:Object.entries(labels).map(([k,v])=>`<div class="d-flex justify-content-between border-bottom py-2 small"><span>${v}</span><b>${pronteraEsc(h[k])}</b></div>`).join('')+'<p class="small text-muted mt-3">ผลตรวจเชิงโครงสร้าง ไม่ได้ทดสอบ PDF, อีเมลหรือ Trigger จริง</p>',confirmButtonText:'ปิด'});}catch(e){pronteraError(e);}
+}
+
+// Global Variables
   var calendar;
   var allRooms = []; 
   var currentUser = null; 
@@ -96,23 +188,18 @@
   }
 
 
-  document.addEventListener('DOMContentLoaded', function() {
-    // Independent core initialization: optional room decoration must not block calendar.
-    initCalendar();
-    loadRooms();
-    checkLocalSession();
-  });
+  // Core initialization is performed by pnBoot after all UI declarations.
 
   // --- 1. Load Rooms & Colors ---
   function loadRooms() {
     google.script.run
       .withSuccessHandler(function(rooms) {
         allRooms = Array.isArray(rooms) ? rooms : [];
-        populateRoomDropdown(allRooms);
-        if (typeof pnRefreshRooms === 'function') pnRefreshRooms(allRooms);
-        if (calendar) calendar.refetchEvents();
-        try { renderRoomSidebar(allRooms); } catch (err) { console.warn('Room decoration unavailable', err); }
-        if (document.getElementById('bookingModal').classList.contains('show')) pnFindAvailable(true);
+        pnRunComponent('ตัวเลือกห้องประชุม', () => populateRoomDropdown(allRooms));
+        pnRunComponent('จำนวนห้องและตัวกรอง', () => pnRefreshRooms(allRooms));
+        pnRunComponent('รายการห้องประชุม', () => renderRoomSidebar(allRooms));
+        pnRunComponent('รีเฟรชปฏิทิน', () => { if (calendar) calendar.refetchEvents(); });
+        if (document.getElementById('bookingModal').classList.contains('show')) pnRunComponent('ตรวจสอบห้องว่าง', () => pnFindAvailable(true));
       })
       .withFailureHandler(function(err) {
         document.getElementById('roomListContainer').innerHTML='<div class="p-3 text-danger">โหลดข้อมูลห้องไม่สำเร็จ <button type="button" class="btn btn-outline-primary btn-sm" onclick="loadRooms()">ลองใหม่</button></div>';
@@ -124,39 +211,84 @@
   // --- 2. Init FullCalendar ---
   function initCalendar() {
     const el = document.getElementById('calendar');
+    // FullCalendar appends its own DOM; remove all pre-render placeholders explicitly.
+    el.replaceChildren();
     try {
       if (!window.FullCalendar || !FullCalendar.Calendar) throw new Error('FullCalendar unavailable');
       calendar = new FullCalendar.Calendar(el, {
         initialView: 'dayGridMonth',
         headerToolbar: {left:'prev,next today',center:'title',right:window.innerWidth<600?'dayGridMonth,listWeek':'dayGridMonth,timeGridWeek,timeGridDay,listWeek'},
         locale:'th', buttonText:{today:'วันนี้',month:'เดือน',week:'สัปดาห์',day:'วัน',list:'รายการ'},
-        selectable:true, dayMaxEvents:true,
+        selectable:false, dayMaxEvents:true,
+        dayCellDidMount: pnBindCalendarDay,
         events: function(info, success, failure) { pnFetchCalendar(info.startStr,info.endStr,success,failure); },
-        dateClick:info=>openBookingModal(info.dateStr), eventClick:handleEventClick
+        dateClick:info=>pnCalendarBook(info.dateStr), eventClick:info=>pnRunComponent('รายละเอียดการจอง',()=>handleEventClick(info))
       });
       calendar.render();
     } catch(err) {
       console.warn('Using built-in calendar',err);
+      try { if(calendar && typeof calendar.destroy==='function') calendar.destroy(); } catch(e) { console.warn(e); }
+      el.replaceChildren();
       calendar=pnFallbackCalendar(el);
       calendar.render();
     }
   }
 
-  /** Read bookings with visible failure state, shared by both calendar renderers. */
-  function pnFetchCalendar(start,end,success,failure) {
-    google.script.run.withSuccessHandler(events=>{
-      try {
-        if(!Array.isArray(events))throw new Error('รูปแบบข้อมูลปฏิทินไม่ถูกต้อง');
-        const filter=document.getElementById('pnRoomFilter').value;
-        const items=events.filter(e=>e&&(!filter||String(e.resourceId)===filter)).map(e=>{
-          const r=allRooms.find(r=>String(r.roomId)===String(e.resourceId)), color=r&&/^#[0-9a-f]{6}$/i.test(r.color)?r.color:'#176b68', status=(e.extendedProps||{}).status;
-          return Object.assign({},e,{backgroundColor:color,borderColor:color,textColor:'#fff',classNames:status==='Pending Approval'?['pn-event-pending']:status==='Approval Error'?['pn-event-error']:[]});
-        });
-        pnCalendarNotice(''); success(items);
-      } catch(e) {pnCalendarNotice(e.message);failure(e);}
-    }).withFailureHandler(e=>{pnCalendarNotice(e.message||String(e));failure(e);}).getBookingsData(start,end,getSessionToken());
+  /** Month cells remain actionable even if the calendar interaction plugin does not emit dateClick. */
+  let pnLastCalendarOpen=0;
+  function pnCalendarBook(dateStr) {
+    const modal = document.getElementById('bookingModal');
+    if (modal.classList.contains('show') || modal.getAttribute('aria-modal') === 'true' || Date.now()-pnLastCalendarOpen<300) return;
+    pnLastCalendarOpen=Date.now();
+    pnRunComponent('เปิดแบบฟอร์มจอง', () => openBookingModal(dateStr));
   }
-  function pnCalendarNotice(message){const n=document.getElementById('pnCalendarNotice');n.hidden=!message;n.replaceChildren();if(message){n.append(document.createTextNode('โหลดปฏิทินไม่สำเร็จ: '+message+' '));const b=document.createElement('button');b.type='button';b.className='btn btn-outline-primary btn-sm';b.textContent='ลองใหม่';b.onclick=()=>calendar&&calendar.refetchEvents();n.append(b);}}
+  function pnBindCalendarDay(info) {
+    if (!info.view || info.view.type !== 'dayGridMonth' || !info.el) return;
+    const cell = info.el;
+    const key = cell.getAttribute('data-date') || (info.date && !isNaN(info.date.getTime()) ? [info.date.getFullYear(), String(info.date.getMonth()+1).padStart(2,'0'), String(info.date.getDate()).padStart(2,'0')].join('-') : '');
+    if (!key) return;
+    cell.addEventListener('click', event => {
+      if (event.target.closest('.fc-event,.fc-more-link,.fc-popover,button,input,select,textarea') || (event.target.closest('a') && !event.target.closest('.fc-daygrid-day-number'))) return;
+      // FullCalendar dateClick may already have opened the dialog on pointer-up.
+      setTimeout(() => pnCalendarBook(key), 0);
+    });
+    const number = cell.querySelector('.fc-daygrid-day-number');
+    if (number) {
+      number.setAttribute('role','button'); number.setAttribute('tabindex','0');
+      number.setAttribute('aria-label','จองห้องวันที่ '+key);
+      number.addEventListener('keydown', event => { if(event.key==='Enter'||event.key===' '){event.preventDefault();event.stopPropagation();pnCalendarBook(key);} });
+    }
+  }
+  let pnCalendarFetchSeq = 0;
+  /** A read-only calendar RPC always settles the visible loading state. */
+  function pnFetchCalendar(start,end,success,failure) {
+    const sequence = ++pnCalendarFetchSeq;
+    const loading = document.getElementById('pnCalendarLoading');
+    if(loading) loading.hidden=false;
+    pnCalendarNotice('');
+    let settled=false;
+    const finish=(error,events)=>{
+      if(settled)return;settled=true;clearTimeout(timer);
+      if(sequence===pnCalendarFetchSeq){if(loading)loading.hidden=true;pnCalendarNotice(error ? error.message||String(error) : '');}
+      if(error)failure(error);else success(events);
+    };
+    const timer=setTimeout(()=>finish(new Error('หมดเวลารอข้อมูล กรุณาลองใหม่')),30000);
+    try{
+      google.script.run.withSuccessHandler(events=>{
+        if(settled)return;
+        try{
+          if(!Array.isArray(events))throw new Error('รูปแบบข้อมูลปฏิทินไม่ถูกต้อง');
+          const selector=document.getElementById('pnRoomFilter'),filter=selector?selector.value:'';
+          const items=events.filter(e=>e&&(!filter||String(e.resourceId)===filter)).map(e=>{
+            const r=allRooms.find(r=>String(r.roomId)===String(e.resourceId)),color=r&&/^#[0-9a-f]{6}$/i.test(r.color)?r.color:'#176b68',status=(e.extendedProps||{}).status;
+            return Object.assign({},e,{backgroundColor:color,borderColor:color,textColor:'#fff',classNames:status==='Pending Approval'?['pn-event-pending']:status==='Approval Error'?['pn-event-error']:[]});
+          });
+          finish(null,items);
+        }catch(e){finish(e);}
+      }).withFailureHandler(e=>finish(e||new Error('ไม่สามารถโหลดข้อมูลได้'))).getBookingsData(start,end,getSessionToken());
+    }catch(e){finish(e);}
+  }
+  function pnCalendarNotice(message){const n=document.getElementById('pnCalendarNotice');if(!n)return;n.hidden=!message;n.replaceChildren();if(message){n.append(document.createTextNode('โหลดปฏิทินไม่สำเร็จ: '+message+' '));const b=document.createElement('button');b.type='button';b.className='btn btn-outline-primary btn-sm';b.textContent='ลองใหม่';b.onclick=()=>calendar&&calendar.refetchEvents();n.append(b);}}
 
   /** Dependency-free month view if the external calendar cannot initialize. */
   function pnFallbackCalendar(el){
@@ -166,9 +298,9 @@
       const ticket=++generation,[y,m]=month.split('-').map(Number),first=new Date(Date.UTC(y,m-1,1)),last=new Date(Date.UTC(y,m,1)),dateKey=d=>d.toISOString().slice(0,10),move=n=>{month=new Date(Date.UTC(y,m-1+n,1)).toISOString().slice(0,7);draw();};
       el.replaceChildren();const toolbar=document.createElement('div');toolbar.className='pn-fallback-toolbar';const btn=(label,fn)=>{const b=document.createElement('button');b.type='button';b.className='btn btn-outline-primary btn-sm';b.textContent=label;b.onclick=fn;return b;};const title=document.createElement('strong');title.textContent=first.toLocaleDateString('th-TH',{month:'long',year:'numeric',timeZone:'UTC'});toolbar.append(btn('‹',()=>move(-1)),title,btn('›',()=>move(1)),btn('วันนี้',()=>{month=new Date(Date.now()+25200000).toISOString().slice(0,7);draw();}));el.append(toolbar);
       const grid=document.createElement('div');grid.className='pn-fallback-grid';['อา.','จ.','อ.','พ.','พฤ.','ศ.','ส.'].forEach(t=>{const h=document.createElement('div');h.className='pn-fallback-dayname';h.textContent=t;grid.append(h);});for(let i=0;i<first.getUTCDay();i++)grid.append(document.createElement('div'));
-      const cells=new Map();for(let day=1;day<=new Date(Date.UTC(y,m,0)).getUTCDate();day++){const key=dateKey(new Date(Date.UTC(y,m-1,day))),cell=document.createElement('div');cell.className='pn-fallback-cell';const b=btn(String(day),()=>openBookingModal(key));b.setAttribute('aria-label','จองวันที่ '+key);cell.append(b);cells.set(key,cell);grid.append(cell);}while(grid.children.length%7)grid.append(document.createElement('div'));el.append(grid);
-      const loading=document.createElement('p');loading.className='small text-muted mt-2';loading.textContent='กำลังโหลดรายการจอง...';el.append(loading);
-      pnFetchCalendar(dateKey(first)+'T00:00:00+07:00',dateKey(last)+'T00:00:00+07:00',events=>{if(ticket!==generation)return;loading.textContent=events.length?'':'ไม่มีรายการจองในเดือนนี้';for(const e of events){const a=new Date(e.start),b=new Date(e.end);if(!Number.isFinite(a.getTime())||!Number.isFinite(b.getTime()))continue;for(const [key,cell] of cells){const start=new Date(key+'T00:00:00+07:00'),end=new Date(start.getTime()+86400000);if(a>=end||b<=start)continue;const link=document.createElement('button');link.type='button';link.className='pn-fallback-event';link.style.backgroundColor=e.backgroundColor;link.textContent=e.title||'รายการจอง';link.onclick=()=>handleEventClick({event:Object.assign({},e,{start:a,end:b})});cell.append(link);}}},()=>{if(ticket===generation)loading.textContent='ไม่สามารถโหลดรายการจองได้';});
+      const cells=new Map();for(let day=1;day<=new Date(Date.UTC(y,m,0)).getUTCDate();day++){const key=dateKey(new Date(Date.UTC(y,m-1,day))),cell=document.createElement('div');cell.className='pn-fallback-cell';const b=btn(String(day),()=>pnCalendarBook(key));b.setAttribute('aria-label','จองวันที่ '+key);cell.append(b);cells.set(key,cell);grid.append(cell);}while(grid.children.length%7)grid.append(document.createElement('div'));el.append(grid);
+      const loading=document.createElement('p');loading.className='small text-muted mt-2';loading.hidden=true;el.append(loading);
+      pnFetchCalendar(dateKey(first)+'T00:00:00+07:00',dateKey(last)+'T00:00:00+07:00',events=>{if(ticket!==generation)return;loading.textContent=events.length?'':'ไม่มีรายการจองในเดือนนี้';loading.hidden=events.length>0;for(const e of events){const a=new Date(e.start),b=new Date(e.end);if(!Number.isFinite(a.getTime())||!Number.isFinite(b.getTime()))continue;for(const [key,cell] of cells){const start=new Date(key+'T00:00:00+07:00'),end=new Date(start.getTime()+86400000);if(a>=end||b<=start)continue;const link=document.createElement('button');link.type='button';link.className='pn-fallback-event';link.style.backgroundColor=e.backgroundColor;link.textContent=e.title||'รายการจอง';link.onclick=()=>handleEventClick({event:Object.assign({},e,{start:a,end:b})});cell.append(link);}}},()=>{if(ticket===generation){loading.textContent='ไม่สามารถโหลดรายการจองได้';loading.hidden=false;}});
     }return api;
   }
 
@@ -286,6 +418,8 @@
     updateRoomName();
   }
 
+  function pnBangkokLocal(d){return d&&Number.isFinite(d.getTime())?new Date(d.getTime()+25200000).toISOString().slice(0,16):'';}
+
   function updateRoomName() {
     const select=document.getElementById('roomId'),option=select.value?select.options[select.selectedIndex]:null;
     document.getElementById('roomName').value=option?option.dataset.name:'';
@@ -313,7 +447,12 @@ function openBookingModal(dateStr) {
     pnExistingLayout=false;
     populateRoomDropdown(allRooms);
     pnResetBookingFields();
-    if(dateStr){const raw=String(dateStr);const start=raw.length===10?raw+'T09:00':/[Zz]|[+-]\d{2}:\d{2}$/.test(raw)?new Date(new Date(raw).getTime()+25200000).toISOString().slice(0,16):raw.slice(0,16);const end=new Date(new Date(start+'+07:00').getTime()+3600000+25200000).toISOString().slice(0,16);pnSetBookingRange(start,end);}
+    if(dateStr){
+      const raw=String(dateStr), iso=/^\d{4}-\d{2}-\d{2}$/;
+      const start=iso.test(raw)?raw+'T09:00':/[Zz]|[+-]\d{2}:\d{2}$/.test(raw)?pnBangkokLocal(new Date(raw)):raw.slice(0,16);
+      const ms=new Date(start+'+07:00').getTime();
+      if(Number.isFinite(ms))pnSetBookingRange(start,pnBangkokLocal(new Date(ms+3600000)));
+    }
     bootstrap.Modal.getOrCreateInstance(document.getElementById('bookingModal')).show();
   }
 
@@ -1463,4 +1602,119 @@ async function handleFormSubmit(e) {
       });
   }
 
+/** Date-first single page booking. Canonical hidden values preserve legacy GAS contract. */
+let pnExistingLayout=false,pnAvailGeneration=0,pnAvailTimer=0,pnLastStartDate='';
+function pnResetBookingFields(){pnAvailGeneration++;clearTimeout(pnAvailTimer);pnLastStartDate='';pnEl('startTime').value='';pnEl('endTime').value='';pnEl('pnEndClock').setCustomValidity('');pnEl('pnAvailability').textContent='เลือกวันและเวลาเพื่อค้นหาห้องว่าง';pnEl('pnDateNote').textContent='เวลาไทย (UTC+7) · รองรับการใช้งานข้ามวัน';}
+function pnSetBookingRange(start,end){pnEl('pnStartDate').value=String(start||'').slice(0,10);pnEl('pnStartClock').value=String(start||'').slice(11,16);pnEl('pnEndDate').value=String(end||'').slice(0,10);pnEl('pnEndClock').value=String(end||'').slice(11,16);pnLastStartDate=pnEl('pnStartDate').value;pnSyncBookingRange();pnScheduleAvailability();}
+function pnSyncBookingRange(){
+  const a=pnEl('pnStartDate'),b=pnEl('pnEndDate'),c=pnEl('pnStartClock'),d=pnEl('pnEndClock'),validClock=v=>/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(v);
+  const start=a.value&&validClock(c.value)?a.value+'T'+c.value:'',end=b.value&&validClock(d.value)?b.value+'T'+d.value:'';
+  pnEl('startTime').value=start;pnEl('endTime').value=end;
+  const range=!!start&&!!end&&end>start;
+  d.setCustomValidity(start&&end&&!range?'เวลาสิ้นสุดต้องอยู่หลังเวลาเริ่มต้น':'');
+  const thaiDate=v=>new Date(v+'T00:00:00+07:00').toLocaleDateString('th-TH',{day:'numeric',month:'long',year:'numeric',timeZone:'Asia/Bangkok'});
+  pnEl('pnDateNote').textContent=start&&end&&!range?'กรุณาแก้ไขวันและเวลาสิ้นสุด':range?thaiDate(a.value)+' '+c.value+' – '+thaiDate(b.value)+' '+d.value+' น. (เวลาไทย)':'เวลาไทย (UTC+7) · รองรับการใช้งานข้ามวัน';
+  return range;
+}
+function pnScheduleAvailability(){
+  clearTimeout(pnAvailTimer);pnAvailGeneration++;
+  const select=pnEl('roomId');for(const o of Array.from(select.options).slice(1)){o.disabled=false;o.textContent=o.dataset.name+' (รองรับ '+(o.dataset.capacity||'ไม่ระบุ')+' คน)';}
+  if(pnEl('isEdit').value==='true'){pnEl('pnAvailability').textContent='แก้ไขรายการเดิม · ระบบตรวจห้องว่างอีกครั้งก่อนบันทึก';return;}
+  if(!pnSyncBookingRange()){pnEl('pnAvailability').textContent='เลือกวันและเวลาเพื่อค้นหาห้องว่าง';return;}
+  pnEl('pnAvailability').textContent='กำลังตรวจสอบห้องว่างตามช่วงเวลา...';pnAvailTimer=setTimeout(()=>pnFindAvailable(false),350);
+}
+async function pnFindAvailable(manual){
+  clearTimeout(pnAvailTimer);const generation=++pnAvailGeneration,notice=pnEl('pnAvailability'),select=pnEl('roomId');
+  if(pnEl('isEdit').value==='true'){notice.textContent='แก้ไขรายการเดิม · ระบบตรวจห้องว่างอีกครั้งก่อนบันทึก';return;}
+  if(!pnSyncBookingRange()){notice.textContent='กรุณาเลือกวันและเวลาให้ครบถ้วน';return;}
+  const count=Number(pnEl('headcount').value||1);if(!Number.isInteger(count)||count<1){notice.textContent='กรุณาระบุจำนวนผู้เข้าประชุมเป็นจำนวนเต็ม';return;}
+  notice.textContent='กำลังตรวจสอบห้องว่าง...';
+  try{const rooms=await pronteraRpc('getPronteraAvailableRooms',pnEl('startTime').value,pnEl('endTime').value,count);if(generation!==pnAvailGeneration)return;if(!Array.isArray(rooms))throw Error('รูปแบบข้อมูลห้องไม่ถูกต้อง');
+    const available=new Set(rooms.map(r=>String(r.roomId)));for(const o of Array.from(select.options).slice(1)){o.disabled=!available.has(o.value);o.textContent=o.dataset.name+' (รองรับ '+(o.dataset.capacity||'ไม่ระบุ')+' คน) · '+(o.disabled?'ไม่พร้อม':'ว่าง');}
+    if(select.value&&!available.has(select.value)){select.value='';updateRoomName();}
+    notice.textContent=available.size?'พบ '+available.size+' ห้องว่าง'+(pnEl('headcount').value?'':' · ระบุจำนวนคนเพื่อกรองความจุ'):'ไม่พบห้องที่ว่างและรองรับจำนวนคนตามเงื่อนไข';
+  }catch(e){if(generation!==pnAvailGeneration)return;for(const o of Array.from(select.options).slice(1)){o.disabled=false;o.textContent=o.dataset.name+' (รองรับ '+(o.dataset.capacity||'ไม่ระบุ')+' คน)';}notice.textContent='ยังตรวจสอบห้องว่างไม่ได้ กดตรวจสอบอีกครั้ง หรือเลือกห้องเพื่อให้ระบบตรวจสอบก่อนบันทึก';}
+}
+function pnValidateBookingFields(){
+  pnSyncBookingRange();const form=pnEl('bookingForm');if(!form.reportValidity())return false;
+  if(!pnEl('startTime').value||!pnEl('endTime').value||pnEl('endTime').value<=pnEl('startTime').value){pnEl('pnStartDate').focus();return false;}
+  if(!pnEl('roomId').value||pnEl('roomId').selectedOptions[0]?.disabled){pnEl('pnAvailability').textContent='กรุณาเลือกห้องประชุมที่พร้อมใช้งาน';pnEl('roomId').focus();return false;}
+  if(pnEl('isEdit').value!=='true'&&new Date(pnEl('startTime').value+'+07:00').getTime()<Date.now()-300000){pnEl('pnDateNote').textContent='ไม่สามารถจองย้อนหลังได้ กรุณาเลือกเวลาใหม่';pnEl('pnStartDate').focus();return false;}
+  return true;
+}
+function pnInitBookingFields(){
+  const date=pnEl('pnStartDate');date.addEventListener('change',()=>{const end=pnEl('pnEndDate');if(!end.value||end.value===pnLastStartDate||end.value<date.value)end.value=date.value;pnLastStartDate=date.value;if(date.value&&!pnEl('pnStartClock').value)pnEl('pnStartClock').value='09:00';if(date.value&&!pnEl('pnEndClock').value)pnEl('pnEndClock').value='10:00';pnScheduleAvailability();});
+  for(const id of ['pnStartClock','pnEndClock','pnEndDate','headcount'])pnEl(id).addEventListener('input',()=>{if(id==='headcount'){const select=pnEl('roomId');if(select.value&&!validateCapacityClient()&&pnEl('isEdit').value!=='true'){select.value='';updateRoomName();}}pnScheduleAvailability();});
+  pnEl('bookingModal').addEventListener('shown.bs.modal',()=>{pnScheduleAvailability();if(!pnEl('pnStartDate').value)pnEl('pnStartDate').focus();});
+  pnEl('bookingModal').addEventListener('hidden.bs.modal',()=>{clearTimeout(pnAvailTimer);pnAvailGeneration++;});
+}
+
+/* Experience layer: routes, guided booking, personal pages and management metrics. */
+let pnPersonalGeneration=0,pnProfileGeneration=0,pnAnalyticsGeneration=0;
+const pnEl=id=>document.getElementById(id);
+const pnLoading=()=>'<div class="pn-empty" role="status"><span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span>กำลังโหลดข้อมูล...</div>';
+function pnCloseMenu(){pnEl('pnNav').classList.remove('open');pnEl('pnMenu').setAttribute('aria-expanded','false');}
+function pnShowView(view){
+  if(!['calendar','bookings','inbox','profile','dashboard'].includes(view))return;
+  if(view==='dashboard'&&(!currentUser||!['Admin','Officer'].includes(currentUser.role))){openLoginModal();return;}
+  document.querySelectorAll('.pn-view').forEach(el=>el.hidden=el.id!=='pnView-'+view);
+  document.querySelectorAll('[data-view]').forEach(el=>{const selected=el.dataset.view===view;el.classList.toggle('active',selected);if(selected)el.setAttribute('aria-current','page');else el.removeAttribute('aria-current');});
+  pnCloseMenu();pnEl('pnMain').focus({preventScroll:true});window.scrollTo(0,0);
+  if(view==='calendar'&&calendar)requestAnimationFrame(()=>calendar.updateSize());
+  if(view==='bookings'||view==='inbox')pnLoadPersonal(view);
+  if(view==='profile')pnLoadProfile();
+  if(view==='dashboard'){loadDashboardData(false);pnLoadAnalytics();}
+}
+function pnRefreshRooms(rooms){
+  pnEl('pnRoomCount').textContent=rooms.length;
+  const select=pnEl('pnRoomFilter'),old=select.value;select.replaceChildren(new Option('ทุกห้อง',''));
+  rooms.forEach(r=>select.add(new Option(r.roomName,r.roomId)));if(rooms.some(r=>String(r.roomId)===old))select.value=old;
+}
+function pnRequestMarkup(r,inbox){
+  const step=Number(r.step),statuses=Array.isArray(r.timeline)?r.timeline:[], labels=['ผู้รับผิดชอบห้อง','งานอาคารสถานที่','รองผู้อำนวยการ'];
+  const timeline=labels.map((label,i)=>{const state=statuses[i]||'';const done=state==='SIGNED',current=state==='PENDING';return `<span class="${done?'done':current?'current':''}">${done?'✓ ':current?'● ':''}${i+1}. ${label}</span>`;}).join('');
+  const url=String(r.url||''),link=inbox&&/^https:\/\/script\.google\.com\//.test(url)?`<a class="btn btn-primary btn-sm mt-3" href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">เปิดเอกสารเพื่อพิจารณา <i class="bi bi-arrow-up-right"></i></a>`:inbox?'<p class="small text-danger mt-3">ลิงก์หมดอายุ กรุณาติดต่อเจ้าหน้าที่</p>':'';
+  return `<article class="pn-request"><small>${escapeHtml(r.id)}</small><h3>${escapeHtml(r.topic)}</h3><div>${escapeHtml(r.room)} · ${escapeHtml(r.start)}</div><div class="mt-2 fw-bold">${escapeHtml(r.status||'รอลงนามขั้นที่ '+step)}</div>${!inbox&&statuses.length?'<div class="pn-timeline" aria-label="สถานะการลงนาม">'+timeline+'</div>':''}${link}</article>`;
+}
+async function pnLoadPersonal(view){const target=pnEl(view==='inbox'?'pnInbox':'pnBookings'),generation=++pnPersonalGeneration;target.innerHTML=pnLoading();try{const rows=await pronteraRpc(view==='inbox'?'getPronteraApprovalInbox':'getPronteraMyBookings');if(generation!==pnPersonalGeneration)return;target.innerHTML=rows.length?rows.map(r=>pnRequestMarkup(r,view==='inbox')).join(''):'<div class="pn-empty">ยังไม่มีรายการ</div>';}catch(e){if(generation===pnPersonalGeneration)target.innerHTML='<div class="pn-empty">'+escapeHtml(e.message||e)+'</div>';}}
+async function pnLoadProfile(){const generation=++pnProfileGeneration,el=pnEl('pnProfile');el.innerHTML=pnLoading();try{const p=await pronteraRpc('getPronteraSignatureProfile');if(generation!==pnProfileGeneration)return;el.innerHTML=`<h2>บัญชี Google Workspace</h2><p class="mt-2">${escapeHtml(p.email||'ยังไม่สามารถยืนยันบัญชี')}</p><hr><h2>ลายเซ็นส่วนบุคคล</h2><p class="mt-2">${!p.enabled?'ยังไม่ได้เปิดระบบลายเซ็น':!p.available?'ไม่สามารถยืนยันบัญชีได้':p.hasSignature?'พร้อมใช้งาน · เวอร์ชัน '+escapeHtml(p.version):'ยังไม่ได้สร้างลายเซ็น'}</p><small class="text-muted">การเปลี่ยนลายเซ็นจะไม่เปลี่ยนเอกสารที่ลงนามแล้ว</small>`;}catch(e){if(generation===pnProfileGeneration)el.innerHTML='<div class="pn-empty">'+escapeHtml(e.message||e)+'</div>';}}
+async function pnLoadAnalytics(){const generation=++pnAnalyticsGeneration,el=pnEl('pnAnalytics');el.innerHTML=pnLoading();try{const a=await pronteraRpc('getPronteraAnalytics',getSessionToken());if(generation!==pnAnalyticsGeneration||!currentUser)return;const max=Math.max(1,...a.rooms.map(r=>r.hours));el.innerHTML=`<div class="pn-kpis mb-4"><div class="pn-kpi"><small>จำนวนการจอง</small><b>${a.count}</b></div><div class="pn-kpi"><small>ชั่วโมงจองในช่วงที่วัด</small><b>${a.hours}</b></div><div class="pn-kpi"><small>เวลาอนุมัติเฉลี่ย (ชม.)</small><b>${a.approvalHours===null?'—':a.approvalHours}</b><small>จาก ${a.approvalCount} Workflow</small></div></div>`+a.rooms.map(r=>`<div class="mb-3"><div class="d-flex justify-content-between gap-2"><b>${escapeHtml(r.name)}</b><span>${r.hours} ชม. · ${r.count} ครั้ง</span></div><div class="pn-bar-track" role="presentation"><div class="pn-bar" style="width:${Math.min(100,100*r.hours/max)}%"></div></div></div>`).join('')+'<p class="small text-muted">ชั่วโมงตามช่วงเวลาจอง ไม่ใช่หลักฐานการใช้ห้องจริง และไม่ใช่อัตราร้อยละของเวลาที่เปิดให้บริการ</p>';}catch(e){if(generation===pnAnalyticsGeneration)el.innerHTML='<div class="pn-empty">'+escapeHtml(e.message||e)+'</div>';}}
+async function pnOpenMaintenance(){try{pronteraLoading('กำลังโหลดรายการปิดห้อง');const data=await pronteraRpc('getPronteraMaintenance',getSessionToken());if(!data.enabled){Swal.fire('ระบบปิดห้องยังไม่เปิด','ผู้ดูแลต้องเปิด Feature Flag หลังตรวจรับ','info');return;}const fmt=v=>new Date(v).toLocaleString('th-TH',{timeZone:'Asia/Bangkok'});const options=allRooms.map(r=>`<option value="${escapeAttr(r.roomId)}">${escapeHtml(r.roomName)}</option>`).join('');const result=await Swal.fire({title:'ปิดห้องซ่อมบำรุง',width:700,html:data.rows.map((r,i)=>`<div class="border rounded p-2 mb-2 text-start">${escapeHtml(r.room)} · ${escapeHtml(fmt(r.start))} – ${escapeHtml(fmt(r.end))}<br>${escapeHtml(r.reason)} <button type="button" class="btn btn-outline-danger btn-sm pn-release" data-index="${i}">ยกเลิกช่วงปิด</button></div>`).join('')+'<hr><div class="text-start"><label for="pnMaintRoom">ห้อง</label><select id="pnMaintRoom" class="form-select">'+options+'</select><label for="pnMaintStart" class="mt-2">เริ่ม (เวลาไทย)</label><input id="pnMaintStart" type="datetime-local" class="form-control"><label for="pnMaintEnd" class="mt-2">สิ้นสุด (เวลาไทย)</label><input id="pnMaintEnd" type="datetime-local" class="form-control"><label for="pnMaintReason" class="mt-2">เหตุผล</label><input id="pnMaintReason" class="form-control" maxlength="300"></div>',showCancelButton:true,confirmButtonText:'เพิ่มช่วงปิดห้อง',cancelButtonText:'ปิด',didOpen:()=>{document.querySelectorAll('.pn-release').forEach(btn=>btn.addEventListener('click',async()=>{const id=data.rows[Number(btn.dataset.index)].id;const c=await Swal.fire({title:'ยืนยันยกเลิกช่วงปิดห้อง?',icon:'warning',showCancelButton:true});if(c.isConfirmed){try{await pronteraRpc('cancelPronteraMaintenance',id,getSessionToken());await pnOpenMaintenance();}catch(e){pronteraError(e);}}}));},preConfirm:()=>{const f={roomId:pnEl('pnMaintRoom').value,start:pnEl('pnMaintStart').value,end:pnEl('pnMaintEnd').value,reason:pnEl('pnMaintReason').value.trim()};if(!f.roomId||!f.start||!f.end||f.end<=f.start||!f.reason){Swal.showValidationMessage('กรุณากรอกข้อมูลครบถ้วน');return false;}return f;}});if(result.isConfirmed){await pronteraRpc('createPronteraMaintenance',result.value,getSessionToken());await Swal.fire('บันทึกสำเร็จ','ระบบจะกันช่วงเวลานี้จากคำขอใหม่','success');}}catch(e){pronteraError(e);}}
+async function pnOpenWorkerHealth(){try{const h=await pronteraRpc('getPronteraWorkerHealth',getSessionToken());const labels={QUEUED:'รอดำเนินการ',RUNNING:'กำลังทำงาน',RETRY:'รอลองใหม่',DONE:'สำเร็จ',FAILED:'ต้องตรวจสอบ',SUPERSEDED:'ยกเลิกตาม Workflow'};await Swal.fire({title:'สถานะ Worker สร้าง PDF',html:'<p>'+ (h.enabled?'เปิดใช้งาน':'ปิดใช้งาน')+'</p><p>Heartbeat: '+escapeHtml(h.heartbeat?new Date(h.heartbeat).toLocaleString('th-TH',{timeZone:'Asia/Bangkok'}):'ยังไม่มี')+'</p>'+Object.entries(labels).map(([k,v])=>'<div class="d-flex justify-content-between border-bottom py-2"><span>'+v+'</span><b>'+Number(h.counts[k]||0)+'</b></div>').join(''),confirmButtonText:'ปิด'});}catch(e){pronteraError(e);}}
+async function pnOpenRoomDisplay(){try{const url=await pronteraRpc('getPronteraRoomDisplayUrl');if(!/^https:\/\/script\.google\.com\//.test(url))throw Error('URL ไม่ถูกต้อง');await Swal.fire({title:'จอแสดงสถานะห้อง',html:'<p>แสดงสถานะตามตารางจองและไม่เปิดเผยข้อมูลผู้จอง</p><a class="btn btn-primary" target="_blank" rel="noopener noreferrer" href="'+escapeAttr(url)+'">เปิดจอแสดงผล</a>',confirmButtonText:'ปิด'});}catch(e){pronteraError(e);}}
+async function pnOpenRecurring(){try{const options=allRooms.map(r=>`<option value="${escapeAttr(r.roomId)}">${escapeHtml(r.roomName)}</option>`).join('');const f=await Swal.fire({title:'วางแผนจองรายสัปดาห์',html:'<div class="text-start"><p class="small">ค้นหาล่วงหน้า 2–12 สัปดาห์ แต่ละรายการต้องยืนยันการลงนามแยกกัน และยังไม่กันห้องจนกว่าจะบันทึก</p><label for="pnRecRoom">ห้อง</label><select class="form-select" id="pnRecRoom">'+options+'</select><label for="pnRecStart">เริ่มครั้งแรก (เวลาไทย)</label><input type="datetime-local" id="pnRecStart" class="form-control"><label for="pnRecEnd">สิ้นสุดครั้งแรก (เวลาไทย)</label><input type="datetime-local" id="pnRecEnd" class="form-control"><label for="pnRecPeople">จำนวนผู้เข้าประชุม</label><input type="number" id="pnRecPeople" min="1" class="form-control" value="1"><label for="pnRecCount">จำนวนสัปดาห์</label><input type="number" min="2" max="12" value="4" id="pnRecCount" class="form-control"></div>',showCancelButton:true,confirmButtonText:'ตรวจสอบช่วงเวลา',preConfirm:()=>{const v={roomId:pnEl('pnRecRoom').value,start:pnEl('pnRecStart').value,end:pnEl('pnRecEnd').value,headcount:pnEl('pnRecPeople').value,count:pnEl('pnRecCount').value};if(!v.roomId||!v.start||!v.end||v.end<=v.start||!v.headcount||Number(v.count)<2||Number(v.count)>12){Swal.showValidationMessage('กรุณากรอกข้อมูลให้ครบ');return false;}return v;}});if(!f.isConfirmed)return;pronteraLoading('ตรวจสอบช่วงเวลารายสัปดาห์');const rows=await pronteraRpc('getPronteraRecurringPlan',f.value);const room=f.value.roomId,people=f.value.headcount;const pick=await Swal.fire({title:'แผนรายสัปดาห์',html:rows.map((r,i)=>`<div class="border-bottom py-2 text-start"><b>${i+1}. ${escapeHtml(r.start)} – ${escapeHtml(r.end)}</b><br>${r.available?'ว่างตามข้อมูลล่าสุด':'ไม่ว่าง'}</div>`).join('')+'<p class="small text-muted mt-3">เลือกครั้งที่จะสร้างคำขอและลงนาม ข้อมูลนี้ไม่ใช่การยืนยันการจอง</p><select id="pnRecPick" class="form-select">'+rows.map((r,i)=>r.available?`<option value="${i}">ครั้งที่ ${i+1}</option>`:'').join('')+'</select>',showCancelButton:true,confirmButtonText:'สร้างคำขอครั้งที่เลือก',cancelButtonText:'ปิด',preConfirm:()=>{const v=pnEl('pnRecPick').value;if(v===''){Swal.showValidationMessage('ไม่มีช่วงว่าง');return false;}return Number(v);}});if(pick.isConfirmed){const r=rows[pick.value];if(!r||!r.available)return;openBookingModal(r.start);pnSetBookingRange(r.start,r.end);pnEl('roomId').value=room;pnEl('headcount').value=people;updateRoomName();pnFindAvailable(true);}}catch(e){pronteraError(e);}}
+function pnInitAdmin(){const body=pnEl('adminModal').querySelector('.modal-body'),children=Array.from(body.children),nav=document.createElement('div');nav.className='pn-admin-nav';const groups=[['เอกสารและ Workflow',children.slice(0,1).concat(children.slice(2,3))],['การประเมิน',children.slice(1,2)],['ข้อมูลระบบ',children.slice(3)]];groups.forEach(([label,items],i)=>{const btn=document.createElement('button');btn.type='button';btn.className='btn btn-outline-primary btn-sm';btn.textContent=label;btn.addEventListener('click',()=>groups.forEach(([,els],j)=>{els.forEach(e=>e.hidden=j!==i);nav.children[j].classList.toggle('active',j===i);}));nav.append(btn);});body.prepend(nav);nav.firstElementChild.click();}
+/** Bind actual menu controls before starting data requests. Keep errors visible. */
+function pnShowActionError(label,error){
+  console.error('[Prontera R2.2] '+label,error);
+  const box=pnEl('pnActionNotice');
+  if(box){box.hidden=false;box.querySelector('span').textContent=label+' ไม่สำเร็จ: '+String(error && error.message || error || 'เกิดข้อผิดพลาด');}
+}
+function pnRunComponent(label,action){try{const result=action();if(result&&typeof result.catch==='function')result.catch(e=>pnShowActionError(label,e));return result;}catch(e){pnShowActionError(label,e);}}
+function pnBindNavigation(){
+  const actions={home:()=>pnShowView('calendar'),book:()=>openBookingModal(),recurring:pnOpenRecurring,display:pnOpenRoomDisplay,operations:pronteraOpenOperations,health:pronteraOpenHealth,worker:pnOpenWorkerHealth,admin:openAdminPanel,maintenance:pnOpenMaintenance,login:openLoginModal,logout:handleLogout};
+  document.querySelectorAll('[data-pn-action],[data-view]').forEach(node=>{
+    node.addEventListener('click',event=>{
+      event.preventDefault();const view=node.dataset.view,action=node.dataset.pnAction;
+      const label=node.textContent.trim()||'เมนู';
+      pnRunComponent(label,()=>{if(view)return pnShowView(view);if(!actions[action])throw new Error('ไม่พบคำสั่งเมนู');pnCloseMenu();return actions[action]();});
+    });
+  });
+  pnEl('pnMenu').addEventListener('click',()=>{const opened=pnEl('pnNav').classList.toggle('open');pnEl('pnMenu').setAttribute('aria-expanded',String(opened));});
+  document.addEventListener('keydown',e=>{if(e.key==='Escape')pnCloseMenu();});
+  pnEl('pnRoomFilter').addEventListener('change',()=>pnRunComponent('กรองปฏิทิน',()=>{if(calendar)calendar.refetchEvents();}));
+  pnEl('pnDismissActionNotice').addEventListener('click',()=>{pnEl('pnActionNotice').hidden=true;});
+}
+function pnBoot(){
+  if(window.pronteraR22Booted)return;
+  window.pronteraR22Booted=true;
+  pnRunComponent('เมนูหลัก',pnBindNavigation);
+  pnRunComponent('แบบฟอร์มจอง',pnInitBookingFields);
+  pnRunComponent('ศูนย์ควบคุมระบบ',pnInitAdmin);
+  pnRunComponent('ปฏิทิน',initCalendar);
+  pnRunComponent('ข้อมูลห้องประชุม',loadRooms);
+  pnRunComponent('บัญชีเจ้าหน้าที่',checkLocalSession);
+  document.documentElement.dataset.pronteraUi='R2.2';
+}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',pnBoot,{once:true});else pnBoot();
 </script>

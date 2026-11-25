@@ -1,0 +1,122 @@
+PASS Syntax Code.gs
+PASS Syntax SignatureService.gs
+PASS Syntax PronteraServices.gs
+PASS Syntax PronteraOperations.gs
+PASS Syntax PronteraAnalytics.gs
+PASS Syntax PronteraMaintenance.gs
+PASS Syntax PronteraWorker.gs
+PASS Syntax PronteraQrLibrary.gs
+PASS Syntax PronteraVerification.gs
+PASS Syntax PronteraPlanning.gs
+PASS Embedded JS index.html
+PASS Embedded JS javascript.html
+PASS Embedded JS approve.html
+PASS Embedded JS evaluate.html
+PASS Embedded JS SignatureComponents.html
+PASS Embedded JS stylesheet.html
+PASS Embedded JS Experience.html
+PASS Embedded JS verify.html
+PASS Embedded JS display.html
+PASS Manifest
+PASS Bangkok timezone and invalid dates
+PASS Half-open intervals
+PASS Booking state Pending Approval
+PASS Booking state Approved
+PASS Booking state Approval Error
+PASS Booking state Cancelled
+PASS Booking state Rejected
+PASS Feature flag off
+PASS Only deployer can initialize vault
+PASS Profile requires explicit consent and validates format
+PASS Save profile; metadata excludes file ID and image bytes
+PASS No cross-account reuse and fail closed on blank identity
+PASS Book with saved profile creates independent private snapshot and durable receipt
+PASS Retry same receipt returns same booking without new row or snapshot
+PASS Receipt rejects different payload
+PASS New booking cannot bypass overlap with injected booking ID
+PASS Availability reflects room capacity and pending reservation
+PASS Replace signature; old snapshot remains valid
+PASS Calendar interval and guest privacy
+PASS My bookings scoped to Workspace identity
+PASS Cannot sign with valid token but wrong Workspace account
+PASS Saved signature approval step 1
+PASS Saved signature approval step 2
+PASS Saved signature approval step 3
+PASS Final approval preserves booking state and PDF ID
+PASS Cancelled booking cannot be signed
+PASS Empty token rejected
+PASS Session expires even when cached
+TEST_MODE: mail suppressed
+PASS Test mode isolates configuration and suppresses outgoing email
+PASS System health requires staff authorization and returns only counters
+PASS Room preparation does not change approval status and rejects stale update
+PASS Actual schema ensure idempotent on existing headers
+PASS Actual active rooms and required layout
+PASS Actual booking creates initial PDF, actual approval flow, steps, and email
+PASS Saved receipt cannot be recovered by a different Workspace account
+PASS Duplicate token fails closed
+PASS Wrong step and expired token rejected; valid page data available
+PASS Actual three approval steps and real final PDF placement; historical version intact
+PASS Initial PDF missing signature placeholder refuses to write booking
+PASS Mail quota failure preserves booking and valid approval workflow
+PASS Actual edit invalidates old token before creating replacement workflow
+PASS Actual reject releases reservation, invalidates further approval
+PASS Actual final PDF missing saved signature placeholder fails closed, admin recovery reuses signed steps
+PASS Actual cancellation blocks stale token and releases room
+PASS Actual evaluation timing, score validation, aggregation row
+PASS Actual admin role revocation invalidates existing Workspace session
+PASS Legacy login: correct password, empty password, wrong password and revoked session
+PASS Legacy flags OFF: manual requester and three manual approvers with real PDF logic
+PASS Strict requester rejects an unverified manual booking
+PASS Real upload path accepts layout and stores it for required room
+PASS Profile and snapshot tampering or missing files rejected
+PASS Actual staff dashboard and approval overview respect permissions
+Sent survey to BK-20261125191006-2306
+PASS Actual daily summary, one-day reminder, urgent reminder and survey status filters
+{"ready":true,"checks":[{"name":"Bound spreadsheet","ok":true,"detail":"Mock DB"},{"name":"Timezone","ok":true,"detail":"OK"},{"name":"Sheet Rooms","ok":true,"detail":"9 columns"},{"name":"Sheet Bookings","ok":true,"detail":"23 columns"},{"name":"Sheet Officers","ok":true,"detail":"3 columns"},{"name":"Sheet Admin","ok":true,"detail":"5 columns"},{"name":"Sheet Approvers","ok":true,"detail":"10 columns"},{"name":"Sheet ApprovalFlow","ok":true,"detail":"18 columns"},{"name":"Sheet ApprovalSteps","ok":true,"detail":"22 columns"},{"name":"Bookings schema","ok":true,"detail":"OK"},{"name":"Initial/final PDF template","ok":true,"detail":"4 signature placeholders found"},{"name":"Initial PDF folder access","ok":true,"detail":"test-folder"},{"name":"Final PDF folder access","ok":true,"detail":"test-folder"},{"name":"Test mode OFF for production","ok":true,"detail":"OK"},{"name":"Signature vault when enabled","ok":true,"detail":"Private vault and signature headers verified"}],"limitation":"Read-only checks only; actual web-app identity, document rendering, mail, concurrency and trigger runtime still require verification."}
+{"ready":false,"checks":[{"name":"Bound spreadsheet","ok":true,"detail":"Mock DB"},{"name":"Timezone","ok":true,"detail":"OK"},{"name":"Sheet Rooms","ok":true,"detail":"9 columns"},{"name":"Sheet Bookings","ok":true,"detail":"23 columns"},{"name":"Sheet Officers","ok":true,"detail":"3 columns"},{"name":"Sheet Admin","ok":true,"detail":"5 columns"},{"name":"Sheet Approvers","ok":true,"detail":"10 columns"},{"name":"Sheet ApprovalFlow","ok":true,"detail":"18 columns"},{"name":"Sheet ApprovalSteps","ok":true,"detail":"22 columns"},{"name":"Bookings schema","ok":true,"detail":"OK"},{"name":"Initial/final PDF template","ok":false,"detail":"Missing placeholders: {{BUILDING_SIGNATURE}}"},{"name":"Initial PDF folder access","ok":true,"detail":"test-folder"},{"name":"Final PDF folder access","ok":true,"detail":"test-folder"},{"name":"Test mode OFF for production","ok":true,"detail":"OK"},{"name":"Signature vault when enabled","ok":true,"detail":"Private vault and signature headers verified"}],"limitation":"Read-only checks only; actual web-app identity, document rendering, mail, concurrency and trigger runtime still require verification."}
+PASS Actual read-only production preflight catches missing signature placeholder
+PASS Daily approval digest groups pending current steps and does not resend same day
+PASS Admin resends expired approval link with fresh token; old link invalid
+PASS Admin regenerate original memo uses old snapshot and preserves workflow
+PASS Trigger guard allows installed trigger identity and blocks unrelated user
+PASS Lock contention refuses booking, cancellation, approval and evaluation without releasing another execution lock
+PASS Edit write failure after workflow invalidation stays fail-closed
+PASS Every explicit Prontera RPC referenced by HTML resolves to a public backend function
+https://script.google.com/a/macros/g.klaeng.ac.th/s/AKfycbwS0Qk-G1IdZ-94W4aLMJjXT6Otxs1pJ7CZMHFbcjPczhPNXI7yzR_KY7BhyXcR9kkAPA/exec
+PASS Status helpers and URL management
+PASS Session refresh, logout, protected sheets, password hash and token redaction
+เข้ารหัสผ่านในฐานข้อมูลเสร็จสมบูรณ์แล้ว!
+PASS Actual Admin CRUD and password migration on simulated sheet
+PASS Actual HTML routing, script include allowlist, profile readiness
+PASS Actual evaluation resend available only within the assessment window
+PASS Admin memo option and legacy copy preserve source PDF
+PASS Layout sharing repair runs only as owner and only eligible links
+PASS Approver configuration validation and maintenance setup
+PASS Booking status repair requires evidence and cancelled flow repair is owner-only
+PASS Actual resume after step one keeps signature and refreshes only unsigned tokens
+===== PREVIEW: Daily Pending Approval Digest =====
+Generated at: 2026-11-25 19:10:06 (Asia/Bangkok)
+Approver groups: 0
+Pending items to email: 0
+Issues requiring Admin review: 1
+Skipped counters: {"alreadyNotifiedToday":1,"notPendingStep":28,"terminalOrInactiveFlow":0,"notCurrentStep":0,"bookingNotPendingApproval":0,"invalidToken":1,"invalidEmail":0,"invalidSequence":0,"missingData":0}
+No email will be sent in the current preview. This can be normal when there is no current PENDING approval step, every pending step was already notified today, the booking is not Pending Approval, the token expired, or the flow/step is not the current active step.
+
+Issues:
+  1) TOKEN_EXPIRED | Booking=BK-20261125191006-5498 | Approval=AP-20261125191006-1640 | Step=1 | Token ลงนามหมดอายุแล้ว ต้องให้ Admin Reset Workflow หรือส่งลิงก์ใหม่ตามกระบวนการ
+PASS Digest preview and expired token admin alert; legacy reminders on mock services
+PASS Trigger installers and auth diagnostic use mock services only
+PASS Optional approval summary slide draws text and signature images with mock presentation
+PASS Analytics authorization and aggregate math
+PASS Maintenance feature flag, authorization, collision, cancellation and room search
+PASS Worker disabled fallback, owner-only setup, enqueue deduplication and completed job recovery
+PASS Worker actual step three queues PDF, retry preserves signatures and completes only after successful rendering
+PASS Worker skips cancelled and superseded queued booking without creating PDF
+PASS QR encoder generates PNG and verification fails closed without a matching token
+PASS Recurring plan bounds and room display privacy
+PASS Final QR actual workflow creates locally encoded PNG and registers current file
+
+102 checks passed.
+Instrumented server function entry coverage: 265/265 (not branch coverage).
+NOT EXECUTED: 

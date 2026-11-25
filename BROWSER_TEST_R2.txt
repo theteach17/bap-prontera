@@ -1,0 +1,15 @@
+PASS Desktop home and calendar
+PASS My Bookings timeline and escaping
+PASS Approval inbox
+PASS Profile
+PASS Wizard incomplete validation
+PASS Wizard required attachment validation
+PASS Wizard review and back preserves input
+PASS Management dashboard
+PASS Staff view cleared on logout
+PASS Mobile menu and page width
+PASS approve.html mobile route render
+PASS evaluate.html mobile route render
+PASS verify.html mobile route render
+PASS display.html mobile route render
+PASS No uncaught browser errors

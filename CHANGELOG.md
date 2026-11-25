@@ -1,3 +1,9 @@
+# R2 — 25 พฤศจิกายน 2569
+
+- Redesign app shell, navigation, three-step booking, request timeline, profile and shared visual design.
+- Added optional final PDF worker, maintenance blocking, QR, room display and weekly planner; analytics.
+- 102 mock/static checks, 15 Chromium mocked checks and QR decode passed. See R2_REQUIREMENTS.md for incomplete scope and runtime gates.
+
 # R1.1 — Production risk audit (25 November 2026)
 
 - Require matching Workspace identity before saved-signature receipt recovery.

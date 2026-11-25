@@ -1,122 +1,90 @@
-# Project Prontera — Next Generation R1.1
+# Project Prontera — Next Generation R2
 
-ชุด Source Code ฉบับเต็มสำหรับ GitHub branch `upgrade269` / Google Apps Script + Google Workspace + Google Sheets
+**Release candidate สำหรับ Controlled Production Rollout — ยังไม่ผ่านการตรวจรับ Runtime จริง**
 
-- Baseline: `1bd2ac1891eb6c9c76ba09184070f34ad6839a89` (ZIP ที่ผู้ใช้ส่งมา)
-- Release: **R1.1 Audited Controlled Rollout Candidate** — 25 พฤศจิกายน 2569
-- ผ่าน Offline Static + Mocked GAS Regression 85 checks; instrumented server function entry 238/238 (ไม่ใช่ branch coverage) (`tests/regression.cjs`, `TEST_REPORT.txt`)
-- ยังไม่ผ่านการทดสอบกับ Production Google Workspace, Google Slides Template, Drive ACL, Trigger หรือ Browser จริง จึงแนะนำ Test Deployment ก่อนเสมอ หากเลือกฐานจริงโดยไม่สร้าง Sandbox ให้ทำตาม `DIRECT_PRODUCTION.md` และยอมรับความเสี่ยงที่เหลือ
-- ไม่เปลี่ยนแปลงระบบ Production, GitHub หรือข้อมูลจริงจากการจัดทำชุดนี้
+ฐานการพัฒนา: `Prontera_NextGen_R1_1_Upgrade269.zip` จากระบบเดิม `upgrade269` (baseline 1bd2ac189). คง Google Apps Script, Google Sheets, Google Workspace, Drive, Slides, MailApp, กระบวนการอนุมัติสามขั้น และสถานะเดิม ไม่มีการเปลี่ยน Deployment หรือฐานจริงในการจัดทำ ZIP นี้
 
-## 1. ขอบเขตที่ส่งมอบ
+## ขอบเขตและหลักฐาน
 
-- Signature Profile สำหรับผู้จองและผู้ลงนาม 3 ขั้น: วาดหรืออัปโหลด PNG/JPG ครั้งแรก (UI แปลงเป็น PNG), ยืนยันและบันทึก, เปลี่ยนลายเซ็นได้, ใช้ลายเซ็นที่บันทึกไว้จาก Server หลังยืนยันแต่ละครั้ง
-- Private Signature Vault, append-only version metadata, SHA-256, document-specific Snapshot, ตรวจ hash ของ Snapshot จากเวอร์ชันเดิมเมื่อสร้าง Final PDF; ไม่ส่ง raw image/file ID ของ Profile ให้ Client, ไม่มี API ให้ Admin เรียกใช้ลายเซ็นของผู้อื่นโดยใช้ email/file ID
-- Workspace login สำหรับบัญชีเจ้าหน้าที่ที่มี email และ role เดิมในชีท Admin; My Bookings และ Approval Inbox ตรวจสอบ Workspace Identity ฝั่ง Server
-- Lock สำหรับ cancel/repair, ตรวจ booking overlap, server receipt แบบ durable สำหรับการส่งใหม่ซ้ำจากแบบฟอร์มที่ยังเปิดอยู่, ปรับ session expiration และ recheck role, approval action allowlist, private helper RPCs, ลดข้อมูลส่วนบุคคลที่ส่งไปปฏิทินบุคคลทั่วไป
-- Room Finder, Calendar range response, Mobile Agenda, หน้ายืนยันแสดง Booking ID, Batch map สำหรับ Admin Approval Overview, ปรับ CSS มือถือ
-- Room Preparation Queue และ Operational Status แยกจาก Approval; Health Summary แบบ read-only
-- Test Mode แยก config Drive/Slides และระงับ email
-- รักษา GAS, Sheets, Drive, Slides, MailApp, ลำดับอนุมัติ 3 ขั้น, Booking Status, PDF Template และ trigger names เดิม
+- หน้าใหม่: Sidebar/Navigation, หน้าแรก, Room Finder, ปฏิทิน, แบบฟอร์ม 3 ขั้น, My Bookings พร้อม Timeline, Approval Center, Signature Profile, Admin Center, Dashboard, หน้าพิจารณาและประเมิน, Digital Room Display, QR Verification.
+- คงระบบ Signature Vault, Profile, SHA-256, Snapshot และ Workspace login จาก R1.1.
+- เพิ่ม Final PDF Worker แบบ durable queue, retry จำกัด 3 ครั้ง, heartbeat, ตรวจสถานะและลายเซ็นก่อนประมวลผล; ไม่เปลี่ยนสถานะเป็น Approved จนสร้าง PDF สำเร็จ. เอกสารขั้นแรก/การแจ้งเตือนยัง synchronous; ยังไม่ใช่ Notification Outbox หรือ background architecture เต็มรูปแบบ.
+- เพิ่ม Maintenance Blocking แบบไม่ยกเลิกการจองเดิม, recurring weekly planner (ยื่นและลงนามทีละรายการ), QR code แบบ local encoder, analytics ชั่วโมงจองและเวลาอนุมัติ, จอแสดงสถานะห้อง.
+- `R2_REQUIREMENTS.md` เป็นบัญชีตรวจรับข้อกำหนดและงานคงเหลือ. **ไม่ถือว่าครบ Master Plan ทั้งหมด**; PWA/service worker, batch recurring series, full outbox, initial-PDF queue, performance benchmark และการตรวจรับ Production ยังไม่เสร็จ.
+- `TEST_REPORT_R2.txt`: 102 checks ผ่าน, function entry coverage 265/265 (เฉพาะ function declarations ที่ instrumented, ไม่ใช่ branch coverage). `BROWSER_TEST_R2.txt`: 15 checks Chromium โดย mock RPC/FullCalendar/Flatpickr/SweetAlert. `QR_TEST_R2.txt`: ถอดรหัส QR จากภาพที่วางใน final-PDF simulation ได้. ไม่ใช่การทดสอบ Google Workspace/Slides/PDF จริง.
+- เอกสาร R1.1 เดิมใน `docs/R1_1/` และเอกสาร baseline เดิมใช้เป็นประวัติอ้างอิงเท่านั้น; ให้ยึด README นี้สำหรับ R2.
 
-**ยังไม่อยู่ใน R1:** การแยก PDF/Email/Workflow ไป Durable Job Queue/Worker, full guided-form/admin center redesign, full source modularization, notification center/outbox, recurring booking, room maintenance blocking, QR verification, kiosk/digital display, PWA, advanced analytics และ migration ไปสู่ passwordless อย่างบังคับทั้งระบบ การทำรายการเหล่านี้โดยไม่มี integration baseline เพิ่มความเสี่ยงต่อ Production จึงไม่ถือว่า R1 ครบทุกข้อเสนอระยะยาว
+## 1. สำรองและเตรียมติดตั้ง
 
-## 2. ไฟล์ที่ใช้ใน GAS
+1. เก็บ source ของ Apps Script ที่ใช้งานจริง, Git commit, version ของ deployment, URL `/exec`, รายการ Trigger และเจ้าของ Trigger, Script Properties (ไม่เผยแพร่ secret), สำเนา Sheets, สิทธิ์ Drive และ Slides Template. อย่าคิดว่า backup R1.1 ก่อนหน้านี้ครอบคลุมรายการใหม่ทั้งหมด.
+2. แตก ZIP และอัปโหลดไป GitHub ใน development branch ก่อนถ้าทำได้ ตรวจ diff แล้วจึงนำขึ้น `upgrade269`. อย่า overwrite `.clasp.json` หรือ Script ID ของระบบเดิม. ใช้ `.claspignore` และตรวจ `clasp status` ก่อน push.
+3. Pull/อัปเดต **ทุกไฟล์ .gs, .html และ appsscript.json ที่ root พร้อมกัน**. ไฟล์ docs และ tests ไม่ใช่ GAS source. การบันทึก HEAD อาจทำให้ Trigger เดิมใช้ code ใหม่ก่อน Deploy; ควรเลือกเวลาคนใช้น้อยและเฝ้าดู Executions.
+4. ตรวจค่า flags ตามตารางด้านล่าง. หากมี feature ที่ใช้งานอยู่แล้ว ให้ประเมินผลของการเปลี่ยนค่า ไม่ปิดระบบหรือทิ้งคิวโดยพลการ. สำหรับสถานะที่ผู้ใช้รายงานล่าสุด (8 flags false) ให้คงเดิมและ 3 flags ใหม่เป็น false/unset.
+5. รัน `pronteraProductionPreflight` จาก Editor ด้วยบัญชี deployer. ต้องได้ ready:true; นี่เป็น read-only ไม่ทดสอบสิทธิ์เขียนหรือสร้าง PDF จริง. หากผิดพลาด หยุดก่อน Deploy.
+6. แนะนำ Test Deployment/สำเนาฐานข้อมูลก่อน. หากเลือกฐานจริงโดยตรง ให้ทำ controlled rollout ตามหัวข้อ 3 และยอมรับว่ายังมี runtime risk. ห้ามเปิดทุก flag พร้อมกัน.
 
-อัปโหลด/อัปเดตไฟล์เหล่านี้ให้ครบพร้อมกัน **ไม่ใช่เฉพาะ Code.gs**
+## 2. Script Properties
 
-- `Code.gs`
-- `SignatureService.gs`
-- `PronteraServices.gs`
-- `PronteraOperations.gs`
-- `index.html`
-- `javascript.html`
-- `stylesheet.html`
-- `approve.html`
-- `evaluate.html` (คงเดิม)
-- `SignatureComponents.html`
-- `appsscript.json` (คงเดิม)
-
-ไฟล์ Markdown, `TEST_REPORT.txt`, `tests/` เป็นเอกสาร/ชุดทดสอบของ GitHub ไม่ใช่ Apps Script source files. `.claspignore` ช่วยจำกัดการ push ในกรณีใช้ clasp; ตรวจ `clasp status` ก่อน push. ชุดนี้ไม่รวม `.clasp.json` และไม่เปลี่ยน Script ID ของระบบ
-
-## 3. ตรวจรับก่อนอัปโหลด GitHub / Pull GAS
-
-1. ดาวน์โหลดสำรอง repository เดิม และบันทึก HEAD commit. เก็บสำเนา Code/manifest ของ Apps Script ที่ deploy อยู่จริงด้วย เนื่องจาก GitHub HEAD อาจไม่ตรง Deployment.
-2. สำรอง Google Sheets ทั้งไฟล์, Script Properties, Deployment ID/version, Trigger owner/handler/schedule, Drive folder และ Slides Template ACL; ไม่ต้องส่งข้อมูลส่วนบุคคลหรือ token ให้ ChatGPT.
-3. แตก ZIP นี้ ตรวจรายการไฟล์. แนะนำให้ commit ไป development branch ก่อน; เมื่อทดสอบแล้วจึง merge/อัปโหลดเข้า `upgrade269` ตามกระบวนการที่โรงเรียนใช้. อย่า overwrite `.clasp.json` ของ project เดิม.
-4. หากต้องการตรวจ Offline ซ้ำ เปิด Terminal ใน directory ที่มี `Code.gs` แล้วรัน `node tests/regression.cjs` (Node.js 18+ ไม่ต้องลง dependency เพิ่ม). ตรวจว่า exit code 0.
-5. ใช้ไฟล์ Source ทั้ง 11 ไฟล์พร้อมกัน ห้าม Deploy เพียงบางส่วน เพราะมี dependency ข้ามไฟล์.
-
-## 4. Test Deployment แยกจาก Production (แนวทางที่ปลอดภัยที่สุด)
-
-หากเลือกไม่ทำ Sandbox ให้ใช้ `DIRECT_PRODUCTION.md` แทนขั้นตอนส่วนนี้ โดยต้องตรวจ Preflight และทยอยเปิด feature ตามผลตรวจจริง; ไม่ถือว่าผ่าน integration test ล่วงหน้า.
-
-1. สร้างสำเนา Spreadsheet และ bound Apps Script project ใหม่สำหรับทดสอบ. ใช้ headers เหมือนจริง แต่ลบข้อมูลจอง/ลายเซ็น/Approval Token เดิมออกจาก **สำเนาทดสอบเท่านั้น**; เตรียม Rooms, Officers, Approvers และ Admin เป็นบัญชีทดสอบในโดเมนโรงเรียน. ห้ามใช้ข้อมูล live หรือ folder/template live ในการทดสอบ.
-2. ทำสำเนา Slides Template และสร้างโฟลเดอร์ทดสอบแยก 3 โฟลเดอร์: initial PDF, final PDF, setup files; ตั้ง ACL เฉพาะผู้ทดสอบ. ตรวจ template มี placeholders ลายเซ็นทั้ง 4 ตำแหน่ง.
-3. Pull code ทั้งชุดเข้า test project. ตั้ง Script Properties ตามตารางด้านล่าง **ก่อนกด Run ฟังก์ชันใดที่สร้างไฟล์หรือส่งเมล**. อย่าคัดลอก `PRONTERA_SIGNATURE_VAULT_ID` จาก Production.
-
-| Script Property | ค่าใน Test project |
+| Key | ค่าเริ่มต้นสำหรับ rollout |
 |---|---|
-| `PRONTERA_TEST_MODE` | `true` |
-| `PRONTERA_TEMPLATE_SLIDE_ID` | ID ของ Slides Template ทดสอบ |
-| `PRONTERA_PDF_FOLDER_ID` | ID ของโฟลเดอร์ initial PDF ทดสอบ |
-| `PRONTERA_FINAL_SIGNED_MEMO_FOLDER_ID` | ID ของโฟลเดอร์ final PDF ทดสอบ |
-| `PRONTERA_SETUP_FOLDER_ID` | ID ของโฟลเดอร์ setup ทดสอบ (ชื่อต่างจาก `MeetingRoom_SetupFiles`) |
-| `PRONTERA_WORKSPACE_DOMAIN` | `g.klaeng.ac.th` หรือโดเมนที่ได้รับอนุญาตจริง |
-| `MRBS_WEB_APP_URL_OVERRIDE` | URL `/exec` ของ test deployment เท่านั้น (ตั้งหลัง deploy) |
-| `PRONTERA_SIGNATURE_ENABLED` | ยังไม่ต้องตั้ง หรือ `false` |
+| PRONTERA_TEST_MODE | false |
+| PRONTERA_SIGNATURE_ENABLED | false |
+| PRONTERA_STRICT_APPROVAL_IDENTITY | false |
+| PRONTERA_STRICT_REQUESTER_IDENTITY | false |
+| PRONTERA_STRICT_PDF_SIGNATURES | false |
+| PRONTERA_WORKSPACE_ONLY_STAFF | false |
+| PRONTERA_DOMAIN_DOCUMENTS | false |
+| PRONTERA_GUARD_LEGACY_TRIGGERS | false |
+| PRONTERA_FINAL_WORKER_ENABLED | false |
+| PRONTERA_MAINTENANCE_ENABLED | false |
+| PRONTERA_QR_ENABLED | false |
 
-4. Deploy test เป็น Web app: Execute as **Me (ผู้ Deploy)**, Who has access **บุคลากรภายในโดเมน** ตาม manifest. ใช้ URL test `/exec`. ตั้ง `MRBS_WEB_APP_URL_OVERRIDE` ให้ถูกต้อง. Test Mode ระงับ MailApp ทั้งหมด (ผลส่งใน UI เป็น simulated success, ไม่ใช่การส่งจริง); ใช้ Approval Inbox หรือข้อมูล test flow เพื่อเปิดลิงก์ลงนาม ไม่ต้องสร้าง trigger ใน test จนกว่าจะตรวจเส้นทางหลักครบ.
-5. ใช้บัญชีผู้ Deploy รัน `setupApprovalSystem` เฉพาะเมื่อชีททดสอบยังไม่พร้อม (ฟังก์ชันเดิมอาจเพิ่ม Approver default). จากนั้นรัน `setupPronteraSignatureVault` ใน Apps Script Editor. ฟังก์ชันสร้างโฟลเดอร์ private ใน My Drive ของผู้ Deploy + ชีท SignatureProfiles แบบ idempotent โดยไม่เปิด feature เอง. ต้องได้ `ready:true`.
-6. ให้ผู้จองและผู้ลงนามทั้ง 3 ขั้นเปิด test web app จากบัญชีจริงของแต่ละคน แล้วกดเมนู **ลายเซ็น**. ขณะยังไม่ enable ระบบจะแสดงว่าอ่าน Workspace email ได้หรือไม่. หากอ่านไม่ได้ (Session.getActiveUser().getEmail() ว่าง) ห้ามแก้ให้เชื่ออีเมลที่พิมพ์เองหรือใช้ Effective User แทน. ต้องแก้ deployment/domain identity ก่อนเปิด feature.
-7. ตั้ง `PRONTERA_SIGNATURE_ENABLED=true` ใน test project. ทดสอบผู้จองสร้างลายเซ็นใหม่, จองครั้งแรกและครั้งถัดไป, ยืนยันทุกครั้ง, เปลี่ยนลายเซ็น, เปิดเอกสารเก่า; ผู้ลงนามทั้ง 3 ขั้นทดสอบตาม `PRODUCTION_CHECKLIST.md`. Profile bytes ไม่ส่งกลับ Client; UI แสดงสถานะ/เวอร์ชัน ไม่แสดงรูปเดิมเพื่อไม่เปิดช่องคัดลอกผ่านหน้าเว็บ. ภาพที่วาดหรืออัปโหลดใหม่แสดงใน canvas ก่อนบันทึก.
-8. หลังยืนยัน identity ของทุกบัญชีแล้ว ทดสอบเพิ่ม `PRONTERA_STRICT_APPROVAL_IDENTITY=true`, `PRONTERA_STRICT_REQUESTER_IDENTITY=true`, `PRONTERA_STRICT_PDF_SIGNATURES=true` ทีละค่า. ทดสอบ SSO บัญชีเจ้าหน้าที่ทุก role ก่อนตั้ง `PRONTERA_WORKSPACE_ONLY_STAFF=true`.
-9. ทดสอบ Trigger และ email แยกต่างหากด้วยข้อมูลสังเคราะห์และผู้รับเฉพาะ test. หากต้องการทดสอบการส่งจริง ให้ใช้ project ทดสอบที่ตั้งค่าทรัพยากรและ recipient ทุกตำแหน่งเป็น test และตรวจว่าไม่มีข้อมูลจริง จากนั้นจึงปิด Test Mode ชั่วคราว; **ห้ามปิด Test Mode บนสำเนาที่มีผู้รับหรือไฟล์ Production**. คืนค่า `true` หลังทดสอบ.
+ค่า unset เทียบเท่า false. `PRONTERA_WORKSPACE_DOMAIN` default `g.klaeng.ac.th`; ตรวจให้ตรงโดเมนจริง. `PRONTERA_SIGNATURE_VAULT_ID` สร้างผ่าน setup เท่านั้น. `PRONTERA_FINAL_WORKER_HEARTBEAT` เขียนโดย Worker ห้ามตั้งค่าเทียม. `MRBS_WEB_APP_URL_OVERRIDE` ต้องเป็น URL `/exec` ของ deployment ที่ถูกต้อง. ค่าทรัพยากรเดิมไม่ถูกเปลี่ยนอัตโนมัติ.
 
-## 5. Controlled Production Rollout
+หากทำ sandbox: ตั้ง `PRONTERA_TEST_MODE=true`, `PRONTERA_TEMPLATE_SLIDE_ID`, `PRONTERA_PDF_FOLDER_ID`, `PRONTERA_FINAL_SIGNED_MEMO_FOLDER_ID`, `PRONTERA_SETUP_FOLDER_ID`, `MRBS_WEB_APP_URL_OVERRIDE` เป็นทรัพยากรทดสอบทั้งหมดก่อน Run. ไม่คัดลอก Vault ID ของ Production. Test Mode ระงับ MailApp ผ่าน wrapper; ไม่ใช่หลักประกันความปลอดภัยหากยังอ้างอิงทรัพยากร Production โดยตรง.
 
-1. หลังผ่าน checklist ให้ Pull/อัปโหลด Source Code ชุดเต็มเข้า GAS project เดิม. ตรวจว่าใช้ Spreadsheet, Script ID, Slides, Drive, URL และ owner เดิม. **ห้ามนำ test Script Properties หรือ Test Mode เข้าสู่ Production**.
-2. ตรวจว่า `PRONTERA_TEST_MODE` ไม่ใช่ `true`; flags ใหม่ทั้งหมดยังเป็น `false` หรือไม่ได้ตั้ง. Source เดิมจะใช้ manual signature ตามเดิม; การแก้ foundation, calendar, Workspace tools และ room operations เริ่มใช้งานทันทีเมื่อ Deploy ใหม่. ตรวจ regression ของงานเดิมก่อน.
-3. Deploy เป็น **New version ของ deployment เดิม** เพื่อรักษา URL `/exec` และลิงก์ token เดิม. บันทึก version เดิมไว้เพื่อ rollback. ไม่ต้องเปลี่ยน Execute as หรือ access โดยพลการ.
-4. ใช้บัญชี deployer รัน `setupPronteraSignatureVault` ใน Production เท่านั้นหลังตรวจ ACL ของ spreadsheet/Drive. รันครั้งเดียวแล้วตรวจว่าชีทและ Vault private. ถ้าฟังก์ชันแจ้ง SIGNATURE_VAULT_UNSAFE ให้หยุด; อย่าผ่อนสิทธิ์ vault เพื่อให้ผ่าน.
-5. ตรวจ identity จาก web app ด้วยบัญชีผู้จองและผู้ลงนามจริงทุกระดับ. ตั้ง `PRONTERA_SIGNATURE_ENABLED=true` เมื่อผ่านการทดสอบ. เริ่มจองรายการควบคุมและลงนามครบ 3 ขั้น; ตรวจ PDF ทุกลายเซ็น. Feature enabled จะป้องกัน iframe embedding ด้วย XFrameOptions DEFAULT.
-6. เมื่อมั่นใจว่า identity จริงพร้อม ให้ทยอยเปิด flags strict ทีละค่า (ตารางถัดไป). อย่าเปิดทั้งหมดพร้อมกัน. ตรวจรายการค้างเดิมและงานใหม่ก่อนเปิด strict PDF.
-7. ตรวจ Executions, Log, ApprovalLogs และหน้าตรวจสุขภาพระบบ. ตรวจ Trigger ก่อนติดตั้งอะไรเพิ่ม. R1 ไม่ต้องมี Trigger ใหม่สำหรับ Signature/Operations และไม่เปลี่ยนชื่อ handler เดิม.
+## 3. Controlled rollout ฐานจริง
 
-### Feature flags และ properties (Production)
+1. Deploy > Manage deployments > Edit > New version บน deployment เดิม; คง Execute as และ access (USER_DEPLOYING, DOMAIN) และ URL เดิม. อย่าใช้ New deployment ถ้าต้องรักษาลิงก์เดิม.
+2. เปิด URL จริงหลัง Deploy ด้วยบัญชีที่ได้รับอนุญาต (Incognito หากต้องการ). ตรวจ sidebar, room catalog, ปฏิทิน, มือถือ, wizard 3 ขั้น, dashboard, Admin, profile, My Bookings, Approval Center, หน้า approve/evaluate และรายการเก่าที่ยังรออนุมัติ. ยังไม่เปลี่ยนข้อมูลจริงในช่วง read-only smoke test.
+3. สร้างคำขอทดสอบที่ได้รับอนุญาตในช่วงเวลาห้องว่างจริง หัวข้อชัดเจนว่าทดสอบ. ใช้ผู้ลงนามจริงที่ยินยอมทั้งสามขั้น ตรวจ Booking ID, การกันห้อง, PDF, อีเมล, ลิงก์เดิม, Final PDF, สถานะและแบบประเมิน. ตรวจ Executions. ห้ามทดสอบการลงนามแทนบุคคลอื่น. หากผิดปกติหยุด rollout.
+4. ตรวจ Workspace identity ของแต่ละบัญชีผ่าน `getPronteraReadiness` จาก Web App (หน้า Profile) ไม่ใช่จาก Editor เพียงอย่างเดียว. เมื่อยืนยันแล้วให้ deployer รัน `setupPronteraSignatureVault` จาก Editor; ตรวจ private folder และชีท SignatureProfiles; เปิด `PRONTERA_SIGNATURE_ENABLED=true` แล้วรัน preflight ซ้ำ. ทดสอบบันทึก เปลี่ยนลายเซ็น ลงนามครั้งถัดไป และ Final PDF ยังใช้ snapshot เดิม. เปิด strict flags ทีละตัวหลังตรวจรับสิทธิ์ของผู้ใช้จริง; เปิด domain sharing เมื่อทดสอบผู้รับไฟล์ครบ. ไม่ลบผู้ใช้เดิมก่อนตรวจรับ SSO.
+5. Final Worker (optional): รัน `setupPronteraFinalWorker` ด้วย deployer ขณะ flag false; ตรวจมี trigger `runPronteraFinalWorker_` เพียงหนึ่งตัว ทุก 1 นาที. รอ heartbeat จริงหรือรัน `runPronteraFinalWorkerNow` ใน Editor ขณะ flag ยัง false; จากนั้นเปิด `PRONTERA_FINAL_WORKER_ENABLED=true`, รัน preflight ซ้ำ. ทดสอบคำขอใหม่อนุมัติขั้น 3: ยัง Pending Approval จน Worker สร้าง PDF เสร็จ; Admin ดู Worker Health, heartbeat, queue, retry, failed. ถ้า heartbeat เก่า >3 นาที การส่งใหม่ fallback เป็น sync. การ retry ไม่เกิน 3; หาก FAILED ให้ตรวจ PDF/ApprovalFlow/Booking ก่อนใช้ admin recovery เดิม ห้ามกดซ้ำไม่ตรวจหลักฐาน. คิวไม่ได้รับประกัน exactly-once ของผลข้างเคียง Drive/Mail.
+6. Maintenance: เปิด `PRONTERA_MAINTENANCE_ENABLED=true`, Admin สร้างช่วงปิดห้องที่ไม่มีรายการกันห้องอยู่; ตรวจ Room Finder และ saveBooking ว่าปฏิเสธช่วงทับซ้อน, จากนั้นยกเลิกช่วงปิดทดสอบ. ชีท RoomMaintenance สร้างเมื่อบันทึกครั้งแรก. ไม่มีการยกเลิก booking เดิมอัตโนมัติ.
+7. QR: สำรอง Slides template, จัดวาง text shape `{{PRONTERA_QR}}` เพียงหนึ่งตำแหน่ง ขนาด >=90×90 pt ไม่ทับลายเซ็นหรือข้อมูลสำคัญ. เปิด `PRONTERA_QR_ENABLED=true` หลังทดสอบ template, รัน preflight. สร้างคำขอใหม่ ลงนามครบ, สแกน QR จาก PDF ที่ได้จริงด้วยบัญชี Workspace, ตรวจว่าเอกสารที่ยกเลิก/ถูกแทนที่ไม่ valid. QR ตรวจสถานะและไฟล์อ้างอิงในระบบ ไม่ใช่ PKI หรือ proof ว่ากระดาษไม่ถูกปลอม. ไม่มีการออก QR ย้อนหลังอัตโนมัติ.
+8. ตรวจ recurring planner ว่าแผน 2–12 สัปดาห์คำนวณถูกต้องและแต่ละวันต้องยื่นคำขอแยก, Digital Room Display แสดงเวลา/สถานะถูกต้อง (ไม่ใช่เซ็นเซอร์), Dashboard เทียบชั่วโมงจองกับตัวอย่างจริง. ตรวจหน้าประเมินและการแจ้งเตือนเดิม.
+9. เฝ้าดู trigger execution, Drive ACL, mail, quota, latency และความถูกต้องของข้อมูล; อย่าประกาศผ่าน Production Acceptance จนทุกกรณีสำคัญผ่านจริง.
 
-| Property | Default | ผล/เงื่อนไข |
-|---|---|---|
-| `PRONTERA_SIGNATURE_ENABLED` | false | เปิด reusable signature; ต้อง setup vault และ identity preflight; เมื่อเปิด manual signature ใหม่ก็เก็บใน vault; ป้องกัน embedding |
-| `PRONTERA_SIGNATURE_VAULT_ID` | ไม่มี | ถูกตั้งโดย setup function; เก็บเป็น private My Drive ของ deployer; ห้ามแก้/ลบเอง |
-| `PRONTERA_WORKSPACE_DOMAIN` | g.klaeng.ac.th | โดเมนอนุญาตให้ใช้ Workspace features |
-| `PRONTERA_STRICT_APPROVAL_IDENTITY` | false | ตรวจ email Workspace ตรงกับ Approver ที่ถูกกำหนดสำหรับทั้ง approve/reject และเปิดหน้า token; saved profile ตรวจตัวตนเสมอแม้ flag false |
-| `PRONTERA_STRICT_REQUESTER_IDENTITY` | false | ผู้จองใหม่ต้องใช้อีเมลบัญชี Workspace ตรงกับ request; ไม่บังคับ legacy officer edit |
-| `PRONTERA_STRICT_PDF_SIGNATURES` | false | ทุกลายเซ็นใน final PDF ต้องอ่านได้และพบ placeholder; saved-profile signatures ตรวจเสมอแม้ flag false |
-| `PRONTERA_WORKSPACE_ONLY_STAFF` | false | ปิด password login และ bind session กับ email Workspace; ทดสอบทุก role ก่อนเปิด |
-| `PRONTERA_DOMAIN_DOCUMENTS` | false | เปลี่ยนการแชร์ไฟล์เอกสารที่สร้างใหม่เป็น domain-with-link; ต้อง audit ACL และ inherited permissions ก่อน เพราะเอกสารเก่า/โฟลเดอร์เดิมไม่ได้ migrate |
-| `PRONTERA_GUARD_LEGACY_TRIGGERS` | false | จำกัด handler legacy ให้ trigger UID ที่ตรง owner/handler หรือ deployer; เปิดเมื่อทดสอบ trigger จริงทุกตัวแล้วเท่านั้น |
-| `PRONTERA_TEST_MODE` | false | ใช้เฉพาะ test project; suppress mail และบังคับ config แยก |
-| `PRONTERA_TEMPLATE_SLIDE_ID`, `PRONTERA_PDF_FOLDER_ID`, `PRONTERA_FINAL_SIGNED_MEMO_FOLDER_ID`, `PRONTERA_SETUP_FOLDER_ID` | Production เดิม | Optional override; ห้ามเปลี่ยนหากไม่ต้องการย้ายทรัพยากร |
+## 4. Trigger / OAuth
 
-## 6. OAuth scopes (manifest ไม่เปลี่ยน)
+คง triggers เดิมทั้งหมด ไม่เรียกตัวติดตั้งเดิมโดยไม่จำเป็น. Worker ใหม่เป็น trigger เดียวที่เพิ่มได้ด้วย `setupPronteraFinalWorker` เท่านั้น (optional), เจ้าของต้องเป็น deployer. ระวัง trigger เก่าใช้ HEAD แม้ rollback Deployment. Manifest byte-identical กับ R1.1:
 
-- `https://www.googleapis.com/auth/spreadsheets` — อ่าน/เขียน Sheets
-- `https://www.googleapis.com/auth/drive` — Drive files, ACL, Signature Vault, PDF
-- `https://www.googleapis.com/auth/script.send_mail` — MailApp
-- `https://www.googleapis.com/auth/presentations` — Slides Template/PDF
-- `https://www.googleapis.com/auth/script.external_request` — scope เดิม
-- `https://www.googleapis.com/auth/userinfo.email` — Workspace identity
+- `https://www.googleapis.com/auth/spreadsheets` — database
+- `https://www.googleapis.com/auth/drive` — Drive PDF, template, vault
+- `https://www.googleapis.com/auth/script.send_mail` — email
+- `https://www.googleapis.com/auth/presentations` — Slides PDF
+- `https://www.googleapis.com/auth/script.external_request` — existing external requests
+- `https://www.googleapis.com/auth/userinfo.email` — identity
 - `https://www.googleapis.com/auth/script.scriptapp` — trigger management
 
-หาก OAuth consent เปลี่ยน/ผู้ Deploy ถูกเปลี่ยนบัญชี ต้องตรวจสิทธิ์ใหม่ทั้งหมด ไม่ควรแก้ executeAs ให้เป็นผู้ใช้แต่ละคนโดยไม่ประเมิน Drive/Sheets permission
+ไม่เพิ่ม scope ใหม่. หาก Google ขอ authorize ให้ตรวจบัญชีและ scopes ก่อนอนุญาต.
 
-## 7. Trigger setup
+## 5. ทดสอบ Offline ซ้ำ
 
-ตรวจ `TRIGGERS.md` และรายการ Trigger จริงใน Apps Script Editor ก่อนติดตั้ง; คง handler และ schedule เดิม ไม่ติดตั้งซ้ำ. Daily Approval Digest ใหม่ใน baseline มี installer อยู่แล้ว; หากใช้อยู่ให้คง `sendDailyPendingApprovalDigest` และตรวจว่า legacy `sendPendingApprovalReminders` ไม่ส่งซ้ำ. ไม่รัน installer อัตโนมัติจากชุด R1. ถ้าจำเป็นต้องสร้าง ให้เลือก Time-driven และ schedule ตามคู่มือเดิม; Daily Digest ใกล้ 08:15 Bangkok. `PRONTERA_GUARD_LEGACY_TRIGGERS` เปิดหลังตรวจว่าทุก Trigger รันสำเร็จเท่านั้น.
+- `node tests/regression.cjs` (Node.js 18+, built-ins only).
+- `python tests/browser_mock.py` (Python Playwright, Chromium, local Bootstrap CSS/JS; กำหนด `CHROMIUM`, `PRONTERA_BOOTSTRAP_CSS`, `PRONTERA_BOOTSTRAP_JS` ตามเครื่อง). Calendar, picker, dialogs, RPC เป็น mock; ไม่ได้ทดสอบ CDN จริง.
+- `python tests/qr_decode.py` (Node.js + Python OpenCV) ทดสอบ decode QR จาก final generation simulation.
+- Test output ใน root; mock ไม่ส่งอีเมลจริงหรือเข้าถึง Google. อ่าน `R2_REQUIREMENTS.md` สำหรับ coverage ที่ยังไม่ครบ.
 
-## 8. Limitations และ Rollback
+## 6. Stop / Rollback
 
-ดู `ROLLBACK.md`, `PRODUCTION_CHECKLIST.md`, `R1_SCHEMA.md`. GAS มีข้อจำกัดทั่วไปประมาณ 6 นาทีต่อ execution, daily email/service quotas, concurrent executions, properties storage, Cache eviction และ trigger runtime quota ตามประเภทบัญชี; ตรวจ quota ของ Workspace จริง. Calendar range filter ลด payload แต่ยังอ่านข้อมูล Bookings ทั้งชีท; PDF generation และ MailApp ยัง synchronous. ไม่รับรอง latency ที่ไม่ได้ benchmark. Google Sheets ไม่ใช่ transactional database, ระบบยังต้องการ reconciliation เมื่อ partial failure. Receipt ป้องกันการส่งซ้ำเฉพาะคำขอใหม่ในแบบฟอร์มเดิมที่มี Web Crypto, ไม่คงอยู่เมื่อปิด/refresh หน้าและไม่รองรับ edit idempotency. Existing password login ยังเป็น SHA-256 legacy จนกว่าจะบังคับ Workspace-only. Existing shared files/old signature images ไม่ได้รับ ACL migration อัตโนมัติ. Spreadsheet editors, GAS project editors, deployer/Drive owner เป็น trusted administrators; ห้ามให้บุคลากรทั่วไปเป็น editor ของฐานข้อมูลหรือ vault. Shared emails/fallback approver names ต้องตรวจนโยบายการมอบหมายให้ชัดเจน (เมื่อ configured email หลายคน ระบบบันทึก email ที่ยืนยันได้ แต่ชื่ออาจเป็นชื่อที่ผู้ลงนามระบุเอง). Electronic signature รูปภาพ ไม่ใช่ cryptographic PKI signature.
+หยุดเปิด feature ทันทีหากเปิดหน้าไม่ได้, auth fail, booking/approval status ผิด, PDF ลายเซ็นไม่ครบ, เมลผิดผู้รับ, queue ค้าง/failed หรือ quota error. เก็บ booking ID, timestamp, Execution Log โดยไม่เปิดเผย token/signature. ตรวจความถูกต้องของ workflow ก่อน retry.
 
-ถ้าพบข้อผิดพลาด ให้หยุด rollout ปิด flags ที่เพิ่งเปิด ตรวจรายการที่ค้างและ rollback deployment version ตามคู่มือ ห้าม restore database ทั้งไฟล์ทับคำขอที่เกิดหลัง backup.
+- Rollback Web App ด้วย Deploy > Manage deployments > Edit > เลือก version ก่อนหน้า > Deploy. Rollback source HEAD แยกต่างหากจาก snapshot Git/GAS เพื่อให้ trigger ใช้โค้ดเดิม. ตรวจ Trigger และ flags หลัง rollback.
+- ก่อนปิด Worker ให้ระงับการส่งคำขอ/การลงนามตามขั้นตอนที่ได้รับอนุมัติและตรวจ queued/running/retry/failed ทั้งหมด; drain หรือกู้คืนผ่าน Admin อย่างมีหลักฐาน. การปิด flag ทำให้คิวเดิมหยุด ไม่ประมวลผลอัตโนมัติ. ไม่ลบชีทหรือไฟล์.
+- หาก rollback ไป code ที่ไม่รองรับ maintenance ให้ตรวจช่วงปิดที่ยังมีผลและกำหนดมาตรการกันห้องด้วยวิธีที่อนุมัติแล้วก่อน; อย่าเปิดห้องโดยไม่ตั้งใจ.
+- ห้าม restore สำเนา Sheets เก่าทับรายการใหม่. ใช้ backup สำหรับตรวจเทียบและแก้เฉพาะรายการที่ผิดด้วยความอนุมัติ. รักษา snapshot ลายเซ็น, QR registry, queue และ audit trail.
+
+## 7. ข้อจำกัด GAS / Quota
+
+GAS มี execution limit โดยทั่วไป 6 นาทีต่อครั้ง; quota MailApp, Trigger total runtime, Properties, Sheets, Drive และ Slides แตกต่างตามบัญชีและเปลี่ยนได้. Worker ทำครั้งละหนึ่งงานและยังใช้ ScriptLock ระหว่าง final PDF เพื่อความถูกต้อง; ไม่รับประกัน latency/throughput. Sheet ไม่ใช่ transactional DB; process อาจถูกตัดกลาง write และต้อง reconcile. Background initial PDF, full notification outbox, PWA offline, series transaction และ full production performance benchmark ยังไม่เสร็จ. ผล Mock/Chromium ไม่สามารถรับรองว่าไม่มี runtime defect หรือทุก branch ผ่าน.

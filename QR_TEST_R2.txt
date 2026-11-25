@@ -1,0 +1,1 @@
+PASS QR decoded from simulated final PDF placement; expected URL and 64-hex token

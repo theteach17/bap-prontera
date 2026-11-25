@@ -949,6 +949,9 @@ function assertViewableSheet_(sheetName) {
 // --- Core Functions ---
 
 function doGet(e) {
+  if(e.parameter&&e.parameter.page==='display')return HtmlService.createTemplateFromFile('display').evaluate().setTitle('Prontera · Room Display').setXFrameOptionsMode(HtmlService.XFrameOptionsMode.DEFAULT).addMetaTag('viewport','width=device-width, initial-scale=1');
+  if(e.parameter&&e.parameter.page==='verify') {const t=HtmlService.createTemplateFromFile('verify');t.verifyToken=e.parameter.v||'';return t.evaluate().setTitle('Prontera · ตรวจสอบเอกสาร').setXFrameOptionsMode(HtmlService.XFrameOptionsMode.DEFAULT).addMetaTag('viewport','width=device-width, initial-scale=1');}
+
   if (e.parameter && e.parameter.page === 'approve') {
     var approveTemplate = HtmlService.createTemplateFromFile('approve');
     approveTemplate.token = e.parameter.token || '';
@@ -982,7 +985,7 @@ function doGet(e) {
 }
 
 function include(filename) {
-  if (!["javascript","stylesheet","SignatureComponents"].includes(filename)) throw new Error("Invalid include");
+  if (!["javascript","stylesheet","SignatureComponents","Experience"].includes(filename)) throw new Error("Invalid include");
   return HtmlService.createHtmlOutputFromFile(filename).getContent();
 }
 
@@ -2336,6 +2339,7 @@ function saveBooking(formObject, sessionToken) {
       }
     }
 
+    if (pronteraMaintenanceBusy_(newStart,newEnd).has(room.roomId)) throw new Error("ห้องปิดซ่อมบำรุงในช่วงเวลาที่เลือก");
     if (isEdit && existingRowIndex === -1) throw new Error("ไม่พบรายการจองที่ต้องการแก้ไข");
     if (room.requireSetup && !formObject.setupFileBase64 && !existingLayoutUrl) {
       throw new Error("ห้องนี้กำหนดให้แนบไฟล์รูปแบบการจัดโต๊ะหรืออุปกรณ์เพิ่มเติม");
@@ -3167,6 +3171,7 @@ function generatePDFMemo_(formObject, bookingId, newStart, newEnd) {
       throw new Error("ไม่พบ placeholder {{GUESTSIGNATURE}} ใน Template Slide จึงไม่สามารถวางลายเซ็นได้");
     }
 
+    clearTextPlaceholder_(presentation,'{{PRONTERA_QR}}','');
     // PDF ฉบับแรกยังไม่ผ่านกระบวนการลงนามครบ จึงต้องล้าง placeholder กลุ่มลายเซ็น/ชื่อ/ตำแหน่งของผู้อนุมัติออกให้หมด
     // เพื่อไม่ให้ Template ที่เพิ่ม field ใหม่มีข้อความ {{...}} ค้างในเอกสารก่อนอนุมัติ
     clearUnusedFinalMemoPlaceholders_(presentation);
@@ -4468,6 +4473,7 @@ function advanceApprovalStep_(approvalId, completedStepNo, actorName, actorEmail
       }
     }
   }
+  if (pronteraQueueFinalPdf_(approvalId,currentBookingId)) return {status:'SIGNED',message:'ลงนามครบทั้งสามขั้นแล้ว ระบบกำลังรอสร้าง PDF ฉบับสมบูรณ์และจะแจ้งผู้จองเมื่อเสร็จสิ้น'};
   const finalResult = finalizeApprovalFlow_(approvalId, actorName, actorEmail);
   return { status: 'COMPLETED', message: finalResult.notificationWarning || 'ลงนามครบทุกลำดับแล้ว ระบบสร้าง PDF ฉบับสมบูรณ์และแจ้งผู้จองเรียบร้อย', finalPdfUrl: finalResult.url };
 }
@@ -4720,12 +4726,14 @@ function generateFinalSignedMemoPdf_(approvalId) {
     if (ADD_APPROVAL_SUMMARY_SLIDE === true) {
       addApprovalSummarySlide_(presentation, booking, steps);
     }
+    const verification=pronteraAddVerificationQr_(presentation);
     presentation.saveAndClose();
     Utilities.sleep(3000);
     const pdfName = `บันทึกข้อความลงนามครบถ้วน_${bookingId}.pdf`;
     const pdfBlob = copyFile.getAs(MimeType.PDF).setName(pdfName);
     const pdfFile = folder.createFile(pdfBlob).setName(pdfName);
     try { pronteraShareDocument_(pdfFile); } catch(e) {}
+    if(verification)pronteraVerificationSheet_(true).appendRow([verification.hash,approvalId,bookingId,pdfFile.getId(),new Date()]);
     copyFile.setTrashed(true);
     return { url: pdfFile.getUrl(), fileId: pdfFile.getId(), blob: pdfBlob, name: pdfName };
   } catch (e) {

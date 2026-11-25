@@ -43,6 +43,9 @@
     });
   }
 
+  function pnStorageGet(){try{return localStorage.getItem('mrbs_user');}catch(e){return null;}}
+  function pnStorageSet(v){try{localStorage.setItem('mrbs_user',v);}catch(e){}}
+  function pnStorageRemove(){try{localStorage.removeItem('mrbs_user');}catch(e){}}
   function getSessionToken() {
     return currentUser && currentUser.token ? currentUser.token : '';
   }
@@ -70,7 +73,7 @@
     const message = err && err.message ? err.message : String(err || 'ไม่สามารถดำเนินการได้');
     if (message.includes('SESSION_EXPIRED') || message.includes('PERMISSION_DENIED')) {
       currentUser = null;
-      localStorage.removeItem('mrbs_user');
+      pnStorageRemove();
       updateUIState();
     }
     Swal.fire(fallbackTitle, message.replace('SESSION_EXPIRED: ', '').replace('PERMISSION_DENIED: ', ''), 'error');
@@ -119,6 +122,7 @@
       .withSuccessHandler(function(rooms) {
         allRooms = Array.isArray(rooms) ? rooms : [];
         renderRoomSidebar(allRooms);
+        pnRefreshRooms(allRooms);
         populateRoomDropdown(allRooms);
         if (calendar) {
           calendar.refetchEvents();
@@ -154,8 +158,10 @@
             evt.backgroundColor = roomColor;
             evt.borderColor = roomColor;
             evt.textColor = '#ffffff';
+            const status=evt.extendedProps.status; evt.classNames=status==='Pending Approval'?['pn-event-pending']:status==='Approval Error'?['pn-event-error']:[];
           });
-          successCallback(events);
+          const filter=document.getElementById("pnRoomFilter").value;
+          successCallback(events.filter(evt=>!filter||String(evt.resourceId)===filter));
         }).withFailureHandler(err=>{failureCallback(err);handleServerError(err,"โหลดปฏิทินไม่สำเร็จ");}).getBookingsData(info.startStr,info.endStr,getSessionToken());
       },
       
@@ -371,6 +377,7 @@ function openBookingModal(dateStr) {
       showBusyWarning();
       return;
     }
+    document.getElementById('bookingForm').reset();
     const props = event.extendedProps || {};
     document.getElementById('bookingId').value = event.id;
     document.getElementById('isEdit').value = 'true';
@@ -886,7 +893,7 @@ async function handleFormSubmit(e) {
 
       google.script.run.withSuccessHandler((userData) => {
           currentUser = userData;
-          localStorage.setItem('mrbs_user', JSON.stringify(userData));
+          pnStorageSet(JSON.stringify(userData));
           updateUIState();
           bootstrap.Modal.getInstance(document.getElementById('loginModal')).hide();
           Swal.fire('ยินดีต้อนรับ', `สวัสดีคุณ ${escapeHtml(userData.name)}`, 'success');
@@ -905,7 +912,7 @@ async function handleFormSubmit(e) {
       const token = getSessionToken();
       google.script.run.withSuccessHandler(() => {}).logoutSession(token);
       currentUser = null;
-      localStorage.removeItem('mrbs_user');
+      pnStorageRemove();
       updateUIState();
       Swal.fire('Logged Out', 'ออกจากระบบเรียบร้อย', 'info');
       const adminModal = bootstrap.Modal.getInstance(document.getElementById('adminModal'));
@@ -913,36 +920,37 @@ async function handleFormSubmit(e) {
   }
 
   function checkLocalSession() {
-      const stored = localStorage.getItem('mrbs_user');
+      const stored = pnStorageGet();
       if (!stored) return;
 
       try {
         const parsed = JSON.parse(stored);
         if (!parsed || !parsed.token) {
-          localStorage.removeItem('mrbs_user');
+          pnStorageRemove();
           return;
         }
 
         google.script.run
           .withSuccessHandler((userData) => {
             currentUser = Object.assign({}, userData, { token: parsed.token });
-            localStorage.setItem('mrbs_user', JSON.stringify(currentUser));
+            pnStorageSet(JSON.stringify(currentUser));
             updateUIState();
             loadDashboardData(false);
           })
           .withFailureHandler(() => {
             currentUser = null;
-            localStorage.removeItem('mrbs_user');
+            pnStorageRemove();
             updateUIState();
           })
           .refreshSession(parsed.token);
       } catch (e) {
-        localStorage.removeItem('mrbs_user');
+        pnStorageRemove();
       }
   }
 
   function updateUIState() {
     if(calendar) calendar.refetchEvents();
+      if(!currentUser && !document.getElementById("pnView-dashboard").hidden){pnAnalyticsGeneration++;document.getElementById("pnAnalytics").textContent="";document.getElementById("dashboardBody").textContent="";pnShowView("calendar");}
       const dashboardLi = document.getElementById('dashboardMenuLi');
       const dashboardCard = document.getElementById('dashboardCard');
 

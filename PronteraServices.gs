@@ -34,7 +34,7 @@ function pronteraReceipt_(form) {
 function getPronteraAvailableRooms(start,end,headcount) {
   const range=pronteraRange_(start,end), count=Number(headcount);
   if(!Number.isInteger(count)||count<1)throw new Error('กรุณาระบุจำนวนผู้เข้าประชุม');
-  const sheet=SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_BOOKINGS), cols=getBookingCols_(sheet), busy=new Set();
+  const sheet=SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_BOOKINGS), cols=getBookingCols_(sheet), busy=pronteraMaintenanceBusy_(range.start,range.end);
   sheet.getDataRange().getValues().slice(1).forEach(row=>{
     if(!normalizeText_(getCell_(row,cols.id))||!isBookingBlockingRoom_(getCell_(row,cols.status)))return;
     const a=new Date(getCell_(row,cols.start)),b=new Date(getCell_(row,cols.end));
@@ -60,9 +60,11 @@ function getPronteraMyBookings() {
     const id=normalizeText_(getCell_(r,fc.bookingId)), old=latest.get(id);
     if(!old||new Date(getCell_(r,fc.createdAt))>=new Date(getCell_(old,fc.createdAt)))latest.set(id,r);
   });
+  const stepSheet=ss.getSheetByName(SHEET_APPROVAL_STEPS),stepCols=getApprovalStepCols_(stepSheet),timelines=new Map();
+  stepSheet.getDataRange().getValues().slice(1).forEach(r=>{const id=normalizeText_(getCell_(r,stepCols.approvalId)),n=Number(getCell_(r,stepCols.stepNo));if(!id||n<1||n>3||!Number.isInteger(n))return;const timeline=timelines.get(id)||['','',''];timeline[n-1]=normalizeText_(getCell_(r,stepCols.status));timelines.set(id,timeline);});
   return sheet.getDataRange().getValues().slice(1).filter(r=>normalizeText_(getCell_(r,c.requesterEmail)).toLowerCase()===email).sort((a,b)=>new Date(getCell_(b,c.start))-new Date(getCell_(a,c.start))).slice(0,100).map(r=>{
     const id=normalizeText_(getCell_(r,c.id)),f=latest.get(id), d=new Date(getCell_(r,c.start));
-    return {id:id,topic:normalizeText_(getCell_(r,c.topic)),room:normalizeText_(getCell_(r,c.roomName)),start:Number.isFinite(d.getTime())?Utilities.formatDate(d,'Asia/Bangkok','dd/MM/yyyy HH:mm'):'-',status:getBookingStatusLabel_(getCell_(r,c.status)),step:f?Number(getCell_(f,fc.currentStep))||0:0};
+    return {id:id,topic:normalizeText_(getCell_(r,c.topic)),room:normalizeText_(getCell_(r,c.roomName)),start:Number.isFinite(d.getTime())?Utilities.formatDate(d,'Asia/Bangkok','dd/MM/yyyy HH:mm'):'-',status:getBookingStatusLabel_(getCell_(r,c.status)),step:f?Number(getCell_(f,fc.currentStep))||0:0,timeline:f?(timelines.get(normalizeText_(getCell_(f,fc.approvalId)))||[]):[]};
   });
 }
 /** Assigned pending approvals only; expired or cancelled tokens are not returned. */
@@ -131,10 +133,13 @@ function pronteraProductionPreflight(){
   [SHEET_ROOMS,SHEET_BOOKINGS,SHEET_OFFICERS,SHEET_ADMIN,SHEET_APPROVERS,SHEET_APPROVAL_FLOW,SHEET_APPROVAL_STEPS].forEach(name=>check('Sheet '+name,()=>{const s=ss.getSheetByName(name);if(!s||s.getLastRow()<1)throw new Error('Missing header or sheet');return s.getLastColumn()+' columns';}));
   check('Bookings schema',()=>{const s=ss.getSheetByName(SHEET_BOOKINGS),c=getBookingCols_(s);if(s.getLastColumn()<BOOKING_REQUIRED_HEADERS.length||new Set(Object.values(c)).size!==Object.keys(c).length)throw new Error('Incomplete or conflicting booking columns');const h=s.getRange(1,1,1,s.getLastColumn()).getValues()[0].map(x=>normalizeText_(x).toLowerCase()).filter(Boolean);if(new Set(h).size!==h.length)throw new Error('Duplicate headers');});
   check('Initial/final PDF template',()=>{const p=SlidesApp.openById(pronteraConfig_('PRONTERA_TEMPLATE_SLIDE_ID',TEMPLATE_SLIDE_ID));const shapes=p.getSlides().flatMap(slide=>slide.getPageElements().filter(e=>e.getPageElementType()===SlidesApp.PageElementType.SHAPE).map(e=>e.asShape().getText().asString()));const required=['{{GUESTSIGNATURE}}','{{ROOMOFFICER_SIGNATURE}}','{{BUILDING_SIGNATURE}}','{{DEPUTY_SIGNATURE}}'];const missing=required.filter(k=>!shapes.some(t=>t.includes(k)));if(missing.length)throw new Error('Missing placeholders: '+missing.join(', '));return '4 signature placeholders found';});
+  if(pronteraFlag_('PRONTERA_QR_ENABLED'))check('QR template placeholder',()=>{const p=SlidesApp.openById(pronteraConfig_('PRONTERA_TEMPLATE_SLIDE_ID',TEMPLATE_SLIDE_ID));const m=p.getSlides().flatMap(slide=>slide.getPageElements().filter(e=>e.getPageElementType()===SlidesApp.PageElementType.SHAPE).map(e=>e.asShape())).filter(s=>s.getText().asString().includes('{{PRONTERA_QR}}'));if(m.length!==1||Math.min(m[0].getWidth(),m[0].getHeight())<90)throw new Error('QR requires one placeholder at least 90x90 pt');});
   check('Initial PDF folder access',()=>DriveApp.getFolderById(pronteraConfig_('PRONTERA_PDF_FOLDER_ID',PDF_FOLDER_ID)).getName());
   check('Final PDF folder access',()=>DriveApp.getFolderById(pronteraConfig_('PRONTERA_FINAL_SIGNED_MEMO_FOLDER_ID',FINAL_SIGNED_MEMO_FOLDER_ID)).getName());
   check('Test mode OFF for production',()=>{if(pronteraFlag_('PRONTERA_TEST_MODE'))throw new Error('TEST_MODE is enabled');});
   check('Signature vault when enabled',()=>{if(!pronteraFlag_('PRONTERA_SIGNATURE_ENABLED'))return 'Feature disabled';pronteraVault_();pronteraProfileSheet_();return 'Private vault and signature headers verified';});
+  if(pronteraFlag_('PRONTERA_FINAL_WORKER_ENABLED'))check('Final worker readiness',()=>{if(!pronteraJobSheet_(false))throw new Error('Missing PronteraJobs');const heartbeat=Number(PropertiesService.getScriptProperties().getProperty('PRONTERA_FINAL_WORKER_HEARTBEAT'));if(!heartbeat||Date.now()-heartbeat>180000||heartbeat>Date.now()+60000)throw new Error('Worker heartbeat stale');if(ScriptApp.getProjectTriggers().filter(t=>t.getHandlerFunction()==='runPronteraFinalWorker_').length!==1)throw new Error('Expected exactly one worker trigger');});
+  if(pronteraFlag_('PRONTERA_MAINTENANCE_ENABLED'))check('Maintenance schema',()=>{pronteraMaintenanceRows_();return 'OK or not initialized yet';});
   const result={ready:checks.every(x=>x.ok),checks:checks,limitation:'Read-only checks only; actual web-app identity, document rendering, mail, concurrency and trigger runtime still require verification.'};
   console.log(JSON.stringify(result));return result;
 }

@@ -14,6 +14,11 @@ function pronteraPrincipal_() {
   const domain = normalizeText_(PropertiesService.getScriptProperties().getProperty('PRONTERA_WORKSPACE_DOMAIN') || 'g.klaeng.ac.th').toLowerCase();
   return isValidEmail_(email) && email.split('@')[1] === domain ? email : '';
 }
+/** Read only the current verified Workspace account for booking autofill. */
+function getPronteraBookingIdentity() {
+  const email = pronteraPrincipal_();
+  return {email: email};
+}
 function requirePronteraPrincipal_() {
   const email = pronteraPrincipal_();
   if (!email) throw new Error('IDENTITY_UNAVAILABLE: กรุณาเปิดระบบด้วยบัญชี Google Workspace ของโรงเรียน');

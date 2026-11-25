@@ -433,6 +433,32 @@ async function pronteraOpenHealth(){
 
   // --- 5. Booking Actions (Save/Edit/Cancel) ---
 
+// One request per new form; never override typed text or an existing booking.
+let pnEmailGeneration = 0;
+let pnEmailTouched = false;
+function pnResetBookingEmail(isEdit) {
+  const generation = ++pnEmailGeneration;
+  pnEmailTouched = false;
+  const hint = document.getElementById('pnRequesterEmailHint');
+  hint.textContent = isEdit ? 'อีเมลผู้จองเดิม' : 'กำลังตรวจสอบบัญชี Google Workspace…';
+  if (isEdit) return;
+  const input = document.getElementById('requesterEmail');
+  const current = () => generation === pnEmailGeneration && document.getElementById('isEdit').value !== 'true' && !pnEmailTouched && !input.value.trim();
+  // Read-only RPC; no dependency on the signature vault or feature flags.
+  pronteraRpc('getPronteraBookingIdentity').then(result => {
+    if (!current()) return;
+    const email = typeof result?.email === 'string' ? result.email.trim() : '';
+    if (email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      input.value = email;
+      hint.textContent = 'จากบัญชี Google Workspace ที่กำลังใช้งาน · สามารถแก้ไขได้';
+    } else {
+      hint.textContent = 'ไม่พบบัญชี Workspace กรุณากรอกอีเมลด้วยตนเอง';
+    }
+  }).catch(() => {
+    if (current()) hint.textContent = 'กรุณากรอกอีเมลด้วยตนเอง';
+  });
+}
+
 function openBookingModal(dateStr) {
     if (isBookingFlowBusy || isSubmittingBooking) {
       showBusyWarning();
@@ -454,6 +480,7 @@ function openBookingModal(dateStr) {
       if(Number.isFinite(ms))pnSetBookingRange(start,pnBangkokLocal(new Date(ms+3600000)));
     }
     bootstrap.Modal.getOrCreateInstance(document.getElementById('bookingModal')).show();
+    pnResetBookingEmail(false);
   }
 
   function openEditBooking(event) {
@@ -480,6 +507,7 @@ function openBookingModal(dateStr) {
     pnSetBookingRange(local(event.start),local(event.end));
     document.getElementById('bookingModalTitle').innerHTML='<i class="bi bi-pencil-square"></i> แก้ไขข้อมูลการจอง';
     bootstrap.Modal.getOrCreateInstance(document.getElementById('bookingModal')).show();
+    pnResetBookingEmail(true);
   }
 
 function toBase64(file) {
@@ -1645,6 +1673,8 @@ function pnValidateBookingFields(){
 function pnInitBookingFields(){
   const date=pnEl('pnStartDate');date.addEventListener('change',()=>{const end=pnEl('pnEndDate');if(!end.value||end.value===pnLastStartDate||end.value<date.value)end.value=date.value;pnLastStartDate=date.value;if(date.value&&!pnEl('pnStartClock').value)pnEl('pnStartClock').value='09:00';if(date.value&&!pnEl('pnEndClock').value)pnEl('pnEndClock').value='10:00';pnScheduleAvailability();});
   for(const id of ['pnStartClock','pnEndClock','pnEndDate','headcount'])pnEl(id).addEventListener('input',()=>{if(id==='headcount'){const select=pnEl('roomId');if(select.value&&!validateCapacityClient()&&pnEl('isEdit').value!=='true'){select.value='';updateRoomName();}}pnScheduleAvailability();});
+  pnEl('requesterEmail').addEventListener('input',()=>{pnEmailTouched=true;pnEl('pnRequesterEmailHint').textContent='อีเมลสำหรับรับการแจ้งเตือน';});
+  pnEl('bookingModal').addEventListener('hide.bs.modal',()=>{pnEmailGeneration++;});
   pnEl('bookingModal').addEventListener('shown.bs.modal',()=>{pnScheduleAvailability();if(!pnEl('pnStartDate').value)pnEl('pnStartDate').focus();});
   pnEl('bookingModal').addEventListener('hidden.bs.modal',()=>{clearTimeout(pnAvailTimer);pnAvailGeneration++;});
 }
@@ -1686,7 +1716,7 @@ async function pnOpenRecurring(){try{const options=allRooms.map(r=>`<option valu
 function pnInitAdmin(){const body=pnEl('adminModal').querySelector('.modal-body'),children=Array.from(body.children),nav=document.createElement('div');nav.className='pn-admin-nav';const groups=[['เอกสารและ Workflow',children.slice(0,1).concat(children.slice(2,3))],['การประเมิน',children.slice(1,2)],['ข้อมูลระบบ',children.slice(3)]];groups.forEach(([label,items],i)=>{const btn=document.createElement('button');btn.type='button';btn.className='btn btn-outline-primary btn-sm';btn.textContent=label;btn.addEventListener('click',()=>groups.forEach(([,els],j)=>{els.forEach(e=>e.hidden=j!==i);nav.children[j].classList.toggle('active',j===i);}));nav.append(btn);});body.prepend(nav);nav.firstElementChild.click();}
 /** Bind actual menu controls before starting data requests. Keep errors visible. */
 function pnShowActionError(label,error){
-  console.error('[Prontera R2.2] '+label,error);
+  console.error('[Prontera R2.2.1] '+label,error);
   const box=pnEl('pnActionNotice');
   if(box){box.hidden=false;box.querySelector('span').textContent=label+' ไม่สำเร็จ: '+String(error && error.message || error || 'เกิดข้อผิดพลาด');}
 }
@@ -1714,7 +1744,7 @@ function pnBoot(){
   pnRunComponent('ปฏิทิน',initCalendar);
   pnRunComponent('ข้อมูลห้องประชุม',loadRooms);
   pnRunComponent('บัญชีเจ้าหน้าที่',checkLocalSession);
-  document.documentElement.dataset.pronteraUi='R2.2';
+  document.documentElement.dataset.pronteraUi='R2.2.1';
 }
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',pnBoot,{once:true});else pnBoot();
 </script>

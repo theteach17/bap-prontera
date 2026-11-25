@@ -1,0 +1,9 @@
+# Rollback — Prontera R1
+
+1. จดเวลาที่พบ incident, booking/approval ID ที่ได้รับผลกระทบ และ deployment version. หยุดการแก้ไขข้อมูลด้วยมือที่อาจแข่งกับ Web App.
+2. ปิด flag ที่เพิ่งเปิดโดยตั้ง `false` หรือเอา property ออก. สำหรับ profile issue ให้ `PRONTERA_SIGNATURE_ENABLED=false`; หน้าใหม่กลับไป manual signature แต่เอกสารที่ลงนามด้วย snapshot แล้วต้องเก็บ vault/metadata ไว้. หากหน้าเปิดค้าง ให้ reload. หาก strict identity ทำให้ผู้มีสิทธิ์เข้าไม่ได้ ให้พิจารณาปิด strict flag หลังตรวจสอบความเสี่ยง; saved signature ยังตรวจ identity เสมอเมื่อเปิดใช้งาน.
+3. หาก foundation หรือ UI มี regression ให้ Apps Script > Deploy > Manage deployments > Edit > เลือก version เดิมที่บันทึกไว้ แล้ว Deploy โดยคง deployment ID/URL เดิม. ตรวจ execution log และรายการที่ได้รับผลกระทบ.
+4. การ rollback Source ไม่ใช่การ rollback database: คง `SignatureProfiles`, `RoomOperations`, คอลัมน์ `Prontera Submission Receipt`, `Prontera Signature Version`, ไฟล์ Snapshot, Script Property vault ID ไว้ทั้งหมด. ห้าม delete หรือ re-share vault. เวอร์ชันเก่าอาจยังอ่าน file ID ได้ด้วย owner เดิม แต่ไม่มีการตรวจ hash ใหม่, ไม่มี feature ใหม่ และ security hardening ลดลง. ก่อนกลับมา R1 ตรวจ row ที่ถูกแก้ผ่านเวอร์ชันเก่าว่า metadata ตรงกับ signature file ID ปัจจุบัน โดยเฉพาะ legacy edits หลัง rollback.
+5. ตรวจ pending approvals, สถานะ booking, token, PDF, งานจัดห้อง และ notification ทีละรายการ. หากมีเอกสารที่ออกไปแล้ว ห้ามเปลี่ยนลายเซ็นย้อนหลังหรือ restore snapshot ทั้ง spreadsheet ทับคำขอใหม่. ใช้การ reconcile แบบมี audit/authorization เท่านั้น.
+6. ไม่ลบ Trigger หรือเปลี่ยน owner โดยอัตโนมัติ. หาก guard legacy trigger ทำให้รันไม่ได้ให้ปิด flag ก่อน แล้วตรวจ execution. ถ้าจำเป็นต้อง rollback GitHub ให้สร้าง commit revert ตามประวัติ commit ไม่ force-push branch ที่ผู้อื่นใช้งาน.
+7. ก่อนเปิด R1 อีกครั้งให้ทดสอบกรณีที่พบปัญหาใน test deployment และตรวจรับซ้ำ. ข้อมูลใหม่อาจต้องใช้ reconciliation โดยผู้ดูแลระบบ.

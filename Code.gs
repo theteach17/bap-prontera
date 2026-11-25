@@ -147,7 +147,7 @@ function setBookingStatusByRow_(bookSheet, cols, rowNo, status, reason) {
   bookSheet.getRange(rowNo, cols.status).setValue(normalized);
   if (cols.lastUpdated) bookSheet.getRange(rowNo, cols.lastUpdated).setValue(new Date());
   if (reason !== undefined && reason !== null && cols.cancelReason) {
-    bookSheet.getRange(rowNo, cols.cancelReason).setValue(sanitizePlainText_(reason, 1000));
+    bookSheet.getRange(rowNo, cols.cancelReason).setValue(pronteraSheetText_(sanitizePlainText_(reason, 1000)));
   }
   return normalized;
 }
@@ -171,29 +171,29 @@ function markBookingApprovalError_(bookingId, errorMessage, actor) {
   const reason = "Approval workflow error: " + sanitizePlainText_(errorMessage || "ไม่ทราบสาเหตุ", 900);
   try {
     const status = setBookingStatusById_(bookingId, BOOKING_STATUS.APPROVAL_ERROR, reason);
-    logAction(actor || "System", "Booking Approval Error", `Booking ID: ${bookingId} | ${reason}`);
+    logAction_(actor || "System", "Booking Approval Error", `Booking ID: ${bookingId} | ${reason}`);
     return status;
   } catch (e) {
-    logAction("System", "Booking Approval Error Update Failed", `Booking ID: ${bookingId} | ${e.message} | Original: ${reason}`);
+    logAction_("System", "Booking Approval Error Update Failed", `Booking ID: ${bookingId} | ${e.message} | Original: ${reason}`);
     throw e;
   }
 }
 
 function markBookingPendingApproval_(bookingId, reason) {
   const status = setBookingStatusById_(bookingId, BOOKING_STATUS.PENDING_APPROVAL, reason || "เริ่มกระบวนการลงนามเอกสาร");
-  logAction("System", "Booking Pending Approval", `Booking ID: ${bookingId}`);
+  logAction_("System", "Booking Pending Approval", `Booking ID: ${bookingId}`);
   return status;
 }
 
 function markBookingApproved_(bookingId, reason) {
   const status = setBookingStatusById_(bookingId, BOOKING_STATUS.APPROVED, reason || "ลงนามเอกสารครบทุกขั้น");
-  logAction("System", "Booking Approved", `Booking ID: ${bookingId}`);
+  logAction_("System", "Booking Approved", `Booking ID: ${bookingId}`);
   return status;
 }
 
 function markBookingRejected_(bookingId, reason) {
   const status = setBookingStatusById_(bookingId, BOOKING_STATUS.REJECTED, reason || "เอกสารถูกปฏิเสธหรือส่งกลับแก้ไข");
-  logAction("System", "Booking Rejected", `Booking ID: ${bookingId} | เหตุผล: ${sanitizePlainText_(reason || "", 500)}`);
+  logAction_("System", "Booking Rejected", `Booking ID: ${bookingId} | เหตุผล: ${sanitizePlainText_(reason || "", 500)}`);
   return status;
 }
 
@@ -422,7 +422,11 @@ function getSimilarBookingWarningForForm(formObject) {
   return { hasSimilar: true, matches: matches, message: message };
 }
 
-function repairBookingApprovalStatusConsistency() {
+function repairBookingApprovalStatusConsistency(sessionToken) {
+  if (sessionToken) requireUser_(sessionToken,["Admin"]); else requirePronteraEditor_();
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) throw new Error("ระบบกำลังบันทึกข้อมูล กรุณาลองใหม่");
+  try {
   ensureDatabaseSchema_();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const bookSheet = ss.getSheetByName(SHEET_BOOKINGS);
@@ -449,8 +453,8 @@ function repairBookingApprovalStatusConsistency() {
     const latest = related[0];
     const flowStatus = normalizeText_(getCell_(latest, fCols.overallStatus));
     let targetStatus = currentStatus;
-    if (flowStatus === 'COMPLETED') targetStatus = BOOKING_STATUS.APPROVED;
-    else if (isApprovalFlowPendingStatus_(flowStatus)) targetStatus = BOOKING_STATUS.PENDING_APPROVAL;
+    if (flowStatus === 'COMPLETED') { if (!normalizeText_(getCell_(latest,fCols.finalSignedPdfUrl))) continue; targetStatus = BOOKING_STATUS.APPROVED; }
+    else if (isApprovalFlowPendingStatus_(flowStatus) && currentStatus !== BOOKING_STATUS.APPROVAL_ERROR) targetStatus = BOOKING_STATUS.PENDING_APPROVAL;
     else if (flowStatus === 'REJECTED') targetStatus = BOOKING_STATUS.REJECTED;
     else if (flowStatus === 'CANCELLED') targetStatus = BOOKING_STATUS.CANCELLED;
 
@@ -459,8 +463,9 @@ function repairBookingApprovalStatusConsistency() {
       repaired.push({ bookingId: bookingId, from: currentStatus, to: targetStatus, flowStatus: flowStatus });
     }
   }
-  logAction('System Repair', 'Repair Booking Approval Status Consistency', 'จำนวนรายการที่ซ่อม: ' + repaired.length);
+  logAction_('System Repair', 'Repair Booking Approval Status Consistency', 'จำนวนรายการที่ซ่อม: ' + repaired.length);
   return { repairedCount: repaired.length, repaired: repaired };
+  } finally { lock.releaseLock(); }
 }
 
 // --- Helper: Safe Text / HTML / Email ---
@@ -526,6 +531,7 @@ function normalizeWebAppBaseUrl_(url) {
 function getWebAppUrl_() {
   const props = PropertiesService.getScriptProperties();
   const overrideUrl = normalizeText_(props.getProperty("MRBS_WEB_APP_URL_OVERRIDE"));
+  if (pronteraFlag_("PRONTERA_TEST_MODE") && (!overrideUrl || normalizeWebAppBaseUrl_(overrideUrl)===normalizeWebAppBaseUrl_(WEB_APP_EXEC_URL))) throw new Error("TEST_MODE: ตั้งค่า MRBS_WEB_APP_URL_OVERRIDE เป็น Test Deployment URL");
   if (overrideUrl) return normalizeWebAppBaseUrl_(overrideUrl);
 
   // ให้ใช้ URL ระบบจริงก่อนเสมอ เพราะ ScriptApp.getService().getUrl() เมื่อ Run จาก Editor มักคืนค่า /dev
@@ -550,6 +556,8 @@ function buildApprovalUrl_(token) {
 // ใช้เมื่อต้องการกำหนด URL Web App เองแบบถาวร เช่น หลัง Deploy ใหม่แล้วต้องการล็อก URL ที่ถูกต้อง
 // วิธีใช้: เปิด Apps Script > Run > setWebAppUrlOverride แล้วใส่ URL Web App ปัจจุบันในตัวแปรด้านล่างก่อนรัน
 function setWebAppUrlOverride() {
+  requirePronteraEditor_();
+  if(pronteraFlag_("PRONTERA_TEST_MODE"))throw new Error("ตั้งค่า URL ของ Test Deployment ใน Script Properties โดยตรง");
   const currentWebAppUrl = WEB_APP_EXEC_URL; // URL ระบบจริงที่ใช้ส่งให้ผู้ใช้งาน
   const url = normalizeWebAppBaseUrl_(currentWebAppUrl);
   if (!url || !extractDeploymentIdFromUrl_(url)) {
@@ -560,6 +568,7 @@ function setWebAppUrlOverride() {
 }
 
 function clearWebAppUrlOverride() {
+  requirePronteraEditor_();
   PropertiesService.getScriptProperties().deleteProperty("MRBS_WEB_APP_URL_OVERRIDE");
   return "Cleared";
 }
@@ -841,6 +850,7 @@ function getRoomById_(roomId) {
 function createSession_(userData) {
   const token = Utilities.getUuid() + "-" + Utilities.getUuid();
   const payload = {
+    authProvider: userData.authProvider === "workspace" ? "workspace" : "legacy",
     username: normalizeText_(userData.username),
     name: normalizeText_(userData.name),
     role: normalizeText_(userData.role),
@@ -862,7 +872,12 @@ function getSession_(sessionToken) {
 
   const cacheKey = SESSION_CACHE_PREFIX + token;
   const cached = CacheService.getScriptCache().get(cacheKey);
-  if (cached) return JSON.parse(cached);
+  if (cached) {
+    const value = JSON.parse(cached);
+    const expires = new Date(value.createdAt).getTime() + SESSION_TTL_SECONDS * 1000;
+    if (Number.isFinite(expires) && expires > Date.now()) return value;
+    CacheService.getScriptCache().remove(cacheKey);
+  }
 
   const stored = PropertiesService.getScriptProperties().getProperty(cacheKey);
   if (!stored) return null;
@@ -873,7 +888,7 @@ function getSession_(sessionToken) {
     return null;
   }
 
-  CacheService.getScriptCache().put(cacheKey, JSON.stringify(parsed.data), SESSION_TTL_SECONDS);
+  CacheService.getScriptCache().put(cacheKey, JSON.stringify(parsed.data), Math.max(1, Math.min(SESSION_TTL_SECONDS, Math.ceil((parsed.expiresAt-Date.now())/1000))));
   return parsed.data;
 }
 
@@ -881,6 +896,9 @@ function requireUser_(sessionToken, allowedRoles) {
   const user = getSession_(sessionToken);
   if (!user) throw new Error("SESSION_EXPIRED: กรุณาเข้าสู่ระบบใหม่อีกครั้ง");
 
+  if((user.authProvider === "workspace" || pronteraFlag_("PRONTERA_WORKSPACE_ONLY_STAFF")) && requirePronteraPrincipal_() !== String(user.email||"").toLowerCase()) throw new Error("SESSION_EXPIRED: บัญชี Workspace ไม่ตรงกับ Session");
+  const staffSheet=SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_ADMIN);
+  if (!staffSheet || !staffSheet.getDataRange().getValues().slice(1).some(r=>normalizeText_(r[0])===user.username && normalizeText_(r[3])===user.role && normalizeText_(r[4]).toLowerCase()===String(user.email||"").toLowerCase())) throw new Error("SESSION_EXPIRED: สิทธิ์บัญชีมีการเปลี่ยนแปลง");
   if (allowedRoles && allowedRoles.length > 0 && !allowedRoles.includes(user.role)) {
     throw new Error("PERMISSION_DENIED: บัญชีนี้ไม่มีสิทธิ์ดำเนินการดังกล่าว");
   }
@@ -899,7 +917,6 @@ function formatUserForPublicDisplay_(user) {
 
 function refreshSession(sessionToken) {
   const user = requireUser_(sessionToken, []);
-  CacheService.getScriptCache().put(SESSION_CACHE_PREFIX + normalizeText_(sessionToken), JSON.stringify(user), SESSION_TTL_SECONDS);
   return user;
 }
 
@@ -938,7 +955,7 @@ function doGet(e) {
     return approveTemplate.evaluate()
       .setTitle('ลงนามอนุมัติเอกสารขอใช้ห้องประชุม')
       .setFaviconUrl('https://img2.pic.in.th/pic/logofd3322a65d133ac4.png')
-      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
+      .setXFrameOptionsMode(pronteraFlag_("PRONTERA_SIGNATURE_ENABLED") ? HtmlService.XFrameOptionsMode.DEFAULT : HtmlService.XFrameOptionsMode.ALLOWALL)
       .addMetaTag('viewport', 'width=device-width, initial-scale=1');
   }
 
@@ -951,7 +968,7 @@ function doGet(e) {
     return template.evaluate()
       .setTitle('แบบประเมินความพึงพอใจ - Meeting Room System')
       .setFaviconUrl('https://img2.pic.in.th/pic/logofd3322a65d133ac4.png')
-      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
+      .setXFrameOptionsMode(pronteraFlag_("PRONTERA_SIGNATURE_ENABLED") ? HtmlService.XFrameOptionsMode.DEFAULT : HtmlService.XFrameOptionsMode.ALLOWALL)
       .addMetaTag('viewport', 'width=device-width, initial-scale=1');
   }
 
@@ -960,17 +977,18 @@ function doGet(e) {
     .evaluate()
     .setTitle('Meeting Room Booking System')
     .setFaviconUrl('https://img2.pic.in.th/pic/logofd3322a65d133ac4.png')
-    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
+    .setXFrameOptionsMode(pronteraFlag_("PRONTERA_SIGNATURE_ENABLED") ? HtmlService.XFrameOptionsMode.DEFAULT : HtmlService.XFrameOptionsMode.ALLOWALL)
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
 function include(filename) {
+  if (!["javascript","stylesheet","SignatureComponents"].includes(filename)) throw new Error("Invalid include");
   return HtmlService.createHtmlOutputFromFile(filename).getContent();
 }
 
 // --- Helper: Logging ---
 
-function logAction(user, action, details) {
+function logAction_(user, action, details) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let logSheet = ss.getSheetByName(SHEET_LOGS);
 
@@ -981,21 +999,22 @@ function logAction(user, action, details) {
 
   logSheet.appendRow([
     new Date(),
-    sanitizePlainText_(user, 200),
-    sanitizePlainText_(action, 100),
-    sanitizePlainText_(details, 1000)
+    pronteraSheetText_(sanitizePlainText_(user, 200)),
+    pronteraSheetText_(sanitizePlainText_(action, 100)),
+    pronteraSheetText_(sanitizePlainText_(details, 1000))
   ]);
 }
 
 // --- Database Connection (Read) ---
 
 function getRoomsData() {
-  ensureDatabaseSchema_();
   return getActiveRooms_();
 }
 
-function getBookingsData() {
-  ensureDatabaseSchema_();
+function getBookingsData(start,end,sessionToken) {
+  const range = start || end ? pronteraRange_(start,end) : null;
+  let privileged=false;
+  if(sessionToken) { try { requireUser_(sessionToken,["Admin","Officer"]); privileged=true; } catch(ignore) {} }
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(SHEET_BOOKINGS);
   if (!sheet) throw new Error("ไม่พบชีท Bookings");
@@ -1010,6 +1029,7 @@ function getBookingsData() {
       const startObj = new Date(getCell_(row, cols.start));
       const endObj = new Date(getCell_(row, cols.end));
       if (isNaN(startObj.getTime()) || isNaN(endObj.getTime())) return null;
+      if (range && !pronteraOverlaps_(range.start,range.end,startObj,endObj)) return null;
 
       return {
         id: normalizeText_(getCell_(row, cols.id)),
@@ -1023,9 +1043,9 @@ function getBookingsData() {
           requester: normalizeText_(getCell_(row, cols.requester)),
           headcount: Number(getCell_(row, cols.headcount)) || 0,
           roomId: normalizeText_(getCell_(row, cols.roomId)),
-          requesterEmail: normalizeText_(getCell_(row, cols.requesterEmail)),
-          setupDetails: normalizeText_(getCell_(row, cols.setupDetails)),
-          layoutUrl: normalizeText_(getCell_(row, cols.layoutUrl)),
+          requesterEmail: privileged ? normalizeText_(getCell_(row, cols.requesterEmail)) : "",
+          setupDetails: privileged ? normalizeText_(getCell_(row, cols.setupDetails)) : "",
+          layoutUrl: privileged ? normalizeText_(getCell_(row, cols.layoutUrl)) : "",
           status: normalizeBookingStatus_(getCell_(row, cols.status)),
           statusLabel: getBookingStatusLabel_(getCell_(row, cols.status))
         }
@@ -1037,8 +1057,11 @@ function getBookingsData() {
 // --- Booking Management ---
 
 function cancelBooking(bookingId, sessionToken, cancelReason) {
-  ensureDatabaseSchema_();
   const user = requireUser_(sessionToken, ["Admin", "Officer"]);
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) throw new Error("ระบบกำลังบันทึกข้อมูล กรุณาลองใหม่");
+  try {
+  ensureDatabaseSchema_();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const bookSheet = ss.getSheetByName(SHEET_BOOKINGS);
   const cols = getBookingCols_(bookSheet);
@@ -1072,23 +1095,24 @@ function cancelBooking(bookingId, sessionToken, cancelReason) {
       };
 
       setBookingStatusByRow_(bookSheet, cols, i + 1, BOOKING_STATUS.CANCELLED, safeReason);
-      logAction(cancelledByForLog, "Cancel Booking", `ยกเลิกการจอง ID: ${safeBookingId} | เหตุผล: ${safeReason}`);
+      logAction_(cancelledByForLog, "Cancel Booking", `ยกเลิกการจอง ID: ${safeBookingId} | เหตุผล: ${safeReason}`);
       try {
         cancelApprovalFlowForBooking_(safeBookingId, safeReason, cancelledByForLog);
       } catch (approvalCancelErr) {
-        logAction("System", "Approval Cancel Error", `Booking ID: ${safeBookingId} | ${approvalCancelErr.message}`);
+        logAction_("System", "Approval Cancel Error", `Booking ID: ${safeBookingId} | ${approvalCancelErr.message}`);
       }
 
       try {
         sendCancellationNotifications_(bookingData);
       } catch (emailErr) {
-        logAction("System", "Cancellation Email Error", `Booking ID: ${safeBookingId} | ${emailErr.message}`);
+        logAction_("System", "Cancellation Email Error", `Booking ID: ${safeBookingId} | ${emailErr.message}`);
       }
 
       return { status: BOOKING_STATUS.CANCELLED, bookingId: safeBookingId };
     }
   }
   throw new Error("ไม่พบรายการจอง");
+  } finally { lock.releaseLock(); }
 }
 
 // --- Universal CRUD ---
@@ -1111,6 +1135,7 @@ function getSheetData(sheetName, sessionToken) {
 
   const formattedData = data.map(row => {
     return row.map((cell, index) => {
+      if (safeSheetName === SHEET_APPROVAL_STEPS && normalizeText_(headers[index]).toLowerCase() === "token") return "";
       if (safeSheetName === SHEET_ADMIN && index === 1) return ""; // ไม่ส่ง hash รหัสผ่านกลับไปที่ browser
       if (cell instanceof Date) {
         return Utilities.formatDate(cell, ss.getSpreadsheetTimeZone(), "yyyy-MM-dd HH:mm:ss");
@@ -1142,7 +1167,7 @@ function crudDeleteRow(sheetName, rowIndex, sessionToken) {
   }
 
   sheet.deleteRow(targetRow);
-  logAction(formatUserForLog_(user), "CRUD Delete", `ลบข้อมูลในชีท ${safeSheetName} แถวที่ ${targetRow}`);
+  logAction_(formatUserForLog_(user), "CRUD Delete", `ลบข้อมูลในชีท ${safeSheetName} แถวที่ ${targetRow}`);
   return "Success";
 }
 
@@ -1245,7 +1270,8 @@ const EMAIL_THEME = {
 
 // --- Feature 1: Daily Summary to Admins ---
 // Trigger: ตั้งค่าให้รัน "ทุกวัน" เวลา "07:00 น."
-function sendDailySummaryToAdmins() {
+function sendDailySummaryToAdmins(event) {
+  pronteraGuardTrigger_(event,"sendDailySummaryToAdmins");
   ensureDatabaseSchema_();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const bookSheet = ss.getSheetByName(SHEET_BOOKINGS);
@@ -1324,7 +1350,7 @@ function sendDailySummaryToAdmins() {
     `;
   }
 
-  MailApp.sendEmail({
+  pronteraSendMail_({
     to: adminEmails,
     subject: `📅 สรุปการใช้ห้องประชุมประจำวัน (${dateStr})`,
     htmlBody: createBaseEmailTemplate('Daily Summary', emailBody, EMAIL_THEME.primary),
@@ -1334,7 +1360,8 @@ function sendDailySummaryToAdmins() {
 
 // --- Feature 2a: 1 Day Advance Reminder ---
 // Trigger: ตั้งค่าให้รัน "ทุกวัน" เวลา "08:00 น."
-function sendOneDayAdvanceReminder() {
+function sendOneDayAdvanceReminder(event) {
+  pronteraGuardTrigger_(event,"sendOneDayAdvanceReminder");
   ensureDatabaseSchema_();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const bookSheet = ss.getSheetByName(SHEET_BOOKINGS);
@@ -1352,14 +1379,15 @@ function sendOneDayAdvanceReminder() {
     const checkDate = new Date(startDate);
     checkDate.setHours(0, 0, 0, 0);
     if (checkDate.getTime() === tomorrow.getTime()) {
-      sendReminderEmail(row, cols, '1_day_advance');
+      sendReminderEmail_(row, cols, '1_day_advance');
     }
   });
 }
 
 // --- Feature 2b: 30 Minutes Before Reminder ---
 // Trigger: แนะนำให้ตั้งค่ารัน "ทุกๆ 5 หรือ 10 นาที"
-function sendUrgentReminders() {
+function sendUrgentReminders(event) {
+  pronteraGuardTrigger_(event,"sendUrgentReminders");
   ensureDatabaseSchema_();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const bookSheet = ss.getSheetByName(SHEET_BOOKINGS);
@@ -1380,14 +1408,14 @@ function sendUrgentReminders() {
     const timeDiff = startDate.getTime() - now.getTime();
     const isToday = startDate.toDateString() === now.toDateString();
     if (isToday && timeDiff > 0 && timeDiff <= bufferTime) {
-      sendReminderEmail(row, cols, '30_min_urgent');
+      sendReminderEmail_(row, cols, '30_min_urgent');
       bookSheet.getRange(i + 1, cols.reminder30).setValue('Sent');
     }
   }
 }
 
 // --- Helper: Send Specific Reminder Logic ---
-function sendReminderEmail(bookingRow, bookingCols, type) {
+function sendReminderEmail_(bookingRow, bookingCols, type) {
   const booking = buildBookingObjectFromRow_(bookingRow, bookingCols);
   const officerRecipients = getOfficerRecipientsForRoom_(booking.roomId);
 
@@ -1427,7 +1455,7 @@ function sendReminderEmail(bookingRow, bookingCols, type) {
     </div>
   `;
 
-  MailApp.sendEmail({
+  pronteraSendMail_({
     to: recipients.join(','),
     subject: subject,
     htmlBody: createBaseEmailTemplate(title, bodyHtml, color),
@@ -1465,7 +1493,8 @@ function createBaseEmailTemplate(headerTitle, contentHtml, headerColor) {
 
 // --- Feature 3: Send Evaluation Email (Robust Version) ---
 // Trigger: ตั้งค่าให้รัน "ทุกชั่วโมง" หรือ "ทุกวัน" ก็ได้ (แนะนำ "ทุกชั่วโมง")
-function sendPostMeetingSurvey() {
+function sendPostMeetingSurvey(event) {
+  pronteraGuardTrigger_(event,"sendPostMeetingSurvey");
   ensureDatabaseSchema_();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const bookSheet = ss.getSheetByName(SHEET_BOOKINGS);
@@ -1485,9 +1514,9 @@ function sendPostMeetingSurvey() {
 
     if (!bookingId || isNaN(endTime.getTime())) continue;
 
-    if (isBookingEligibleForEvaluation_(status) && userEmail && endTime < now && !isSent_(evalSentStatus)) {
+    if (isBookingEligibleForEvaluation_(status) && userEmail && endTime < now && now.getTime()-endTime.getTime() <= 5*86400000 && !isSent_(evalSentStatus)) {
       try {
-        sendEvaluationEmail(userEmail, bookingId, topic, roomName);
+        sendEvaluationEmail_(userEmail, bookingId, topic, roomName);
         bookSheet.getRange(i + 1, cols.evalSent).setValue("Sent");
         console.log(`Sent survey to ${bookingId}`);
       } catch (e) {
@@ -1497,7 +1526,7 @@ function sendPostMeetingSurvey() {
   }
 }
 
-function sendEvaluationEmail(email, bookingId, topic, roomName) {
+function sendEvaluationEmail_(email, bookingId, topic, roomName) {
   const evalLink = buildEvaluationUrl_(bookingId);
   const safeTopic = escapeHtml_(topic);
   const safeRoomName = escapeHtml_(roomName);
@@ -1528,7 +1557,7 @@ function sendEvaluationEmail(email, bookingId, topic, roomName) {
     </div>
   `;
 
-  MailApp.sendEmail({
+  pronteraSendMail_({
     to: email,
     subject: subject,
     htmlBody: htmlBody,
@@ -1657,12 +1686,12 @@ function resendEvaluationEmailForBooking(bookingId, sessionToken) {
   const roomName = normalizeText_(getCell_(foundRow, cols.roomName));
   const requester = normalizeText_(getCell_(foundRow, cols.requester));
 
-  sendEvaluationEmail(userEmail, safeBookingId, topic, roomName);
+  sendEvaluationEmail_(userEmail, safeBookingId, topic, roomName);
 
   if (cols.evalSent) bookSheet.getRange(rowNo, cols.evalSent).setValue("Sent");
   if (cols.lastUpdated) bookSheet.getRange(rowNo, cols.lastUpdated).setValue(new Date());
 
-  logAction(formatUserForLog_(user), "Resend Evaluation Email", `ส่งลิงก์แบบประเมินใหม่ Booking ID: ${safeBookingId} | ผู้จอง: ${requester} | Email: ${userEmail}`);
+  logAction_(formatUserForLog_(user), "Resend Evaluation Email", `ส่งลิงก์แบบประเมินใหม่ Booking ID: ${safeBookingId} | ผู้จอง: ${requester} | Email: ${userEmail}`);
   return {
     success: true,
     bookingId: safeBookingId,
@@ -1739,6 +1768,10 @@ function getBookingDetailsForEval(bookingId) {
 }
 
 function submitEvaluation(form) {
+  const lock=LockService.getScriptLock();
+  if(!lock.tryLock(10000))throw new Error("ระบบกำลังบันทึกข้อมูล กรุณาลองใหม่");
+  try {
+  if(!form || !normalizeText_(form.bookingId))throw new Error("ไม่พบข้อมูลการจอง");
   ensureDatabaseSchema_();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const bookSheet = ss.getSheetByName(SHEET_BOOKINGS);
@@ -1754,6 +1787,7 @@ function submitEvaluation(form) {
 
   const endTime = new Date(getCell_(booking, cols.end));
   const now = new Date();
+  if (!Number.isFinite(endTime.getTime())) throw new Error("ข้อมูลเวลาสิ้นสุดไม่ถูกต้อง");
   if (now < endTime) throw new Error("แบบประเมินจะเปิดให้กรอกหลังสิ้นสุดการประชุม");
   if ((now.getTime() - endTime.getTime()) / (1000 * 60 * 60 * 24) > 5) {
     throw new Error("แบบประเมินนี้หมดอายุแล้ว");
@@ -1772,8 +1806,8 @@ function submitEvaluation(form) {
 
   const scores = [];
   for (let i = 1; i <= 10; i++) {
-    const score = parseInt(form["q" + i], 10);
-    if (isNaN(score) || score < 1 || score > 5) throw new Error("กรุณาให้คะแนนให้ครบทุกข้อ");
+    const score = Number(form["q" + i]);
+    if (!Number.isInteger(score) || score < 1 || score > 5) throw new Error("กรุณาให้คะแนนให้ครบทุกข้อ");
     scores.push(score);
   }
   const totalScore = scores.reduce((a, b) => a + b, 0);
@@ -1782,14 +1816,15 @@ function submitEvaluation(form) {
     new Date(),
     normalizeText_(form.bookingId),
     normalizeText_(getCell_(booking, cols.roomName)),
-    sanitizePlainText_(form.raterName || "Anonymous", 100),
+    pronteraSheetText_(sanitizePlainText_(form.raterName || "Anonymous", 100)),
     scores[0], scores[1], scores[2], scores[3], scores[4],
     scores[5], scores[6], scores[7], scores[8], scores[9],
-    sanitizePlainText_(form.suggestion, 1000),
+    pronteraSheetText_(sanitizePlainText_(form.suggestion, 1000)),
     totalScore
   ]);
 
   return "Success";
+  } finally {lock.releaseLock();}
 }
 
 // --- New Helper: File Upload ---
@@ -1814,20 +1849,26 @@ function validateBase64Upload_(base64Data, filename) {
   };
 }
 
-function uploadSetupFileToDrive(base64Data, filename) {
+function uploadSetupFileToDrive_(base64Data, filename) {
   if (!base64Data) return '';
   try {
     const validated = validateBase64Upload_(base64Data, filename);
     const blob = Utilities.newBlob(validated.bytes, validated.type, validated.filename);
 
     const folderName = "MeetingRoom_SetupFiles";
-    let folders = DriveApp.getFoldersByName(folderName);
-    let folder = folders.hasNext() ? folders.next() : DriveApp.createFolder(folderName);
-    folder.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    const configured = normalizeText_(PropertiesService.getScriptProperties().getProperty('PRONTERA_SETUP_FOLDER_ID'));
+    let folder;
+    if (pronteraFlag_('PRONTERA_TEST_MODE')) {
+      if (!configured) throw new Error('TEST_MODE: ตั้งค่า PRONTERA_SETUP_FOLDER_ID เป็นโฟลเดอร์ทดสอบ');
+      folder=DriveApp.getFolderById(configured);
+      if(folder.getName()===folderName) throw new Error('TEST_MODE: ห้ามใช้โฟลเดอร์ผัง Production');
+    } else if(configured) folder=DriveApp.getFolderById(configured);
+    else {const folders=DriveApp.getFoldersByName(folderName);folder=folders.hasNext()?folders.next():DriveApp.createFolder(folderName);}
+    if (!pronteraFlag_("PRONTERA_DOMAIN_DOCUMENTS") && !pronteraFlag_("PRONTERA_TEST_MODE")) folder.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
 
     const file = folder.createFile(blob);
     try {
-      file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+      pronteraShareDocument_(file);
     } catch (shareErr) {
       console.warn("ไม่สามารถตั้งค่าสิทธิ์ไฟล์ผังจัดโต๊ะเป็น anyone-with-link ได้: " + shareErr.message);
     }
@@ -1851,9 +1892,9 @@ function uploadSignatureImageToDrive_(signatureBase64, bookingId) {
   if (!base64Part) throw new Error("รูปแบบลายเซ็นไม่ถูกต้อง");
 
   const bytes = Utilities.base64Decode(base64Part);
-  const folder = DriveApp.getFolderById(PDF_FOLDER_ID);
+  const folder = DriveApp.getFolderById(pronteraConfig_("PRONTERA_PDF_FOLDER_ID",PDF_FOLDER_ID));
   const fileName = `ลายเซ็น_${sanitizePlainText_(bookingId, 80)}_${Utilities.formatDate(new Date(), Session.getScriptTimeZone() || "Asia/Bangkok", "yyyyMMddHHmmss")}.png`;
-  const file = folder.createFile(Utilities.newBlob(bytes, 'image/png', fileName));
+  const file = pronteraFlag_('PRONTERA_SIGNATURE_ENABLED') ? pronteraPrivateFile_(bytes,'manual-'+Utilities.getUuid()+'.png') : folder.createFile(Utilities.newBlob(bytes, 'image/png', fileName));
   return {
     fileId: file.getId(),
     url: file.getUrl(),
@@ -1875,7 +1916,7 @@ function getSignatureImageBlobForMemo_(formObject) {
   const signatureFileId = normalizeText_(formObject.signatureFileId);
   if (signatureFileId) {
     try {
-      return DriveApp.getFileById(signatureFileId).getBlob().setName('signature.png');
+      return (formObject.signatureProfileVersion ? pronteraSnapshotBlob_(signatureFileId,formObject.signatureProfileVersion) : DriveApp.getFileById(signatureFileId).getBlob()).setName('signature.png');
     } catch (e) {
       throw new Error("ไม่สามารถเปิดไฟล์ลายเซ็นเดิมเพื่อสร้าง PDF ได้: " + e.message);
     }
@@ -1943,7 +1984,7 @@ function setDriveFileAnyoneWithLinkByUrl_(url, contextLabel) {
   const fileId = extractDriveFileId_(safeUrl);
   if (!fileId) return { ok: false, reason: 'FILE_ID_NOT_FOUND' };
   try {
-    DriveApp.getFileById(fileId).setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    pronteraShareDocument_(DriveApp.getFileById(fileId));
     return { ok: true, fileId: fileId };
   } catch (e) {
     const reason = e && e.message ? e.message : String(e);
@@ -1953,6 +1994,8 @@ function setDriveFileAnyoneWithLinkByUrl_(url, contextLabel) {
 }
 
 function repairPendingLayoutFileSharingForEditor() {
+  requirePronteraEditor_();
+  if(pronteraFlag_("PRONTERA_TEST_MODE"))throw new Error("TEST_MODE: ห้ามแก้สิทธิ์ไฟล์แนบย้อนหลัง");
   ensureDatabaseSchema_();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(SHEET_BOOKINGS);
@@ -1978,21 +2021,22 @@ function repairPendingLayoutFileSharingForEditor() {
     }
   }
 
-  logAction('Apps Script Editor', 'Repair Pending Layout File Sharing', 'ตั้งค่าสิทธิ์ไฟล์ผังจัดโต๊ะสำเร็จ ' + repaired.length + ' รายการ, ข้าม ' + skipped.length + ' รายการ');
+  logAction_('Apps Script Editor', 'Repair Pending Layout File Sharing', 'ตั้งค่าสิทธิ์ไฟล์ผังจัดโต๊ะสำเร็จ ' + repaired.length + ' รายการ, ข้าม ' + skipped.length + ' รายการ');
   return { repairedCount: repaired.length, skippedCount: skipped.length, repaired: repaired, skipped: skipped };
 }
 
 function copyExistingMemoPdf_(bookingId, existingMemoPdfUrl) {
+  if(pronteraFlag_("PRONTERA_TEST_MODE"))throw new Error("TEST_MODE: ใช้คำขอทดสอบใหม่แทนการคัดลอก PDF เดิม");
   const sourceFileId = extractDriveFileId_(existingMemoPdfUrl);
   if (!sourceFileId) {
     throw new Error("ไม่พบ fileId ของไฟล์ PDF เดิมในช่อง Memo PDF URL");
   }
-  const folder = DriveApp.getFolderById(PDF_FOLDER_ID);
+  const folder = DriveApp.getFolderById(pronteraConfig_("PRONTERA_PDF_FOLDER_ID",PDF_FOLDER_ID));
   const sourceFile = DriveApp.getFileById(sourceFileId);
   const pdfName = `บันทึกข้อความ_${sanitizePlainText_(bookingId, 80)}_สร้างใหม่_${Utilities.formatDate(new Date(), Session.getScriptTimeZone() || "Asia/Bangkok", "yyyyMMddHHmmss")}.pdf`;
   const newFile = folder.createFile(sourceFile.getBlob().setName(pdfName));
   try {
-    newFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    pronteraShareDocument_(newFile);
   } catch (shareErr) {
     console.warn("ไม่สามารถตั้งค่าแชร์ PDF เป็น anyone-with-link ได้: " + shareErr.message);
   }
@@ -2006,7 +2050,8 @@ function copyExistingMemoPdf_(bookingId, existingMemoPdfUrl) {
 }
 
 // --- New Feature: ส่งผลประเมินสรุป (ตั้ง Trigger เป็นรายวัน) ---
-function sendEvaluationSummary() {
+function sendEvaluationSummary(event) {
+  pronteraGuardTrigger_(event,"sendEvaluationSummary");
   ensureDatabaseSchema_();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const bookSheet = ss.getSheetByName(SHEET_BOOKINGS);
@@ -2063,7 +2108,7 @@ function sendEvaluationSummary() {
           </div>
         `;
 
-        MailApp.sendEmail({ to: reqEmail, subject: subject, htmlBody: htmlBody, name: "Meeting Room System" });
+        pronteraSendMail_({ to: reqEmail, subject: subject, htmlBody: htmlBody, name: "Meeting Room System" });
       }
       bookSheet.getRange(i + 1, cols.summarySent).setValue("Sent");
     }
@@ -2090,6 +2135,7 @@ function hashPassword(password) {
 
 // --- ฟังก์ชันเข้าสู่ระบบ (อัปเดตให้รองรับการเช็ค Hash) ---
 function checkLogin(username, password) {
+  if(pronteraFlag_("PRONTERA_WORKSPACE_ONLY_STAFF")) throw new Error("กรุณาเข้าสู่ระบบด้วย Google Workspace");
   ensureDatabaseSchema_();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(SHEET_ADMIN);
@@ -2099,8 +2145,10 @@ function checkLogin(username, password) {
   data.shift();
 
   const safeUsername = normalizeText_(username);
+  if (!safeUsername || !password) throw new Error("ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง");
   const hashedPassword = hashPassword(password);
-  const user = data.find(row => normalizeText_(row[0]) === safeUsername && normalizeText_(row[1]) === hashedPassword);
+  const matches = data.filter(row => normalizeText_(row[0]) === safeUsername && normalizeText_(row[1]) === hashedPassword && ["Admin","Officer"].includes(normalizeText_(row[3])));
+  const user = matches.length === 1 ? matches[0] : null;
 
   if (user) {
     const userData = {
@@ -2110,7 +2158,7 @@ function checkLogin(username, password) {
       email: normalizeText_(user[4])
     };
     const token = createSession_(userData);
-    logAction(formatUserForLog_(userData), "Login", "เข้าสู่ระบบสำเร็จ");
+    logAction_(formatUserForLog_(userData), "Login", "เข้าสู่ระบบสำเร็จ");
     return Object.assign({}, userData, { token: token });
   }
   throw new Error("ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง");
@@ -2168,17 +2216,18 @@ function crudSaveRow(sheetName, rowData, rowIndex, sessionToken) {
 
   if (parseInt(rowIndex, 10) === -1) {
     sheet.appendRow(rowValues);
-    logAction(formatUserForLog_(user), "CRUD Add", `เพิ่มข้อมูลในชีท ${safeSheetName}`);
+    logAction_(formatUserForLog_(user), "CRUD Add", `เพิ่มข้อมูลในชีท ${safeSheetName}`);
   } else {
     if (rowNo < 2 || rowNo > sheet.getLastRow()) throw new Error("ตำแหน่งแถวไม่ถูกต้อง");
     sheet.getRange(rowNo, 1, 1, rowValues.length).setValues([rowValues]);
-    logAction(formatUserForLog_(user), "CRUD Edit", `แก้ไขข้อมูลในชีท ${safeSheetName} แถวที่ ${rowNo}`);
+    logAction_(formatUserForLog_(user), "CRUD Edit", `แก้ไขข้อมูลในชีท ${safeSheetName} แถวที่ ${rowNo}`);
   }
   return "Success";
 }
 
 // --- ฟังก์ชันเครื่องมือ: สำหรับแปลงรหัสผ่านเดิมทั้งหมดให้เป็น Hash (ใช้รันแค่ครั้งเดียว) ---
 function convertExistingPasswordsToHash() {
+  requirePronteraEditor_();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(SHEET_ADMIN);
   if (!sheet) return;
@@ -2199,19 +2248,18 @@ function convertExistingPasswordsToHash() {
 }
 
 function saveBooking(formObject, sessionToken) {
-  ensureDatabaseSchema_();
   const lock = LockService.getScriptLock();
   let memoPdfFileIdForRollback = "";
   let signatureFileIdForRollback = "";
   let databaseWritten = false;
+  let writeAttempted = false;
+  let editingBookingId = "";
+  let committedBookingId = "";
   try {
     if (!lock.tryLock(10000)) throw new Error("ขณะนี้มีผู้ใช้งานระบบจำนวนมาก กรุณาลองใหม่อีกครั้ง");
-
+    ensureDatabaseSchema_();
     const isEdit = formObject.isEdit === true || formObject.isEdit === "true";
-    const sessionUser = getSession_(sessionToken);
-    if (isEdit && !sessionUser) {
-      throw new Error("SESSION_EXPIRED: การแก้ไขรายการจองต้องเข้าสู่ระบบเจ้าหน้าที่ก่อน");
-    }
+    const sessionUser = isEdit ? requireUser_(sessionToken,["Admin","Officer"]) : getSession_(sessionToken);
     const currentUser = sessionUser ? formatUserForLog_(sessionUser) : "Guest";
 
     const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -2226,32 +2274,42 @@ function saveBooking(formObject, sessionToken) {
     const requester = sanitizePlainText_(formObject.requester, 150);
     const requesterEmail = normalizeText_(formObject.requesterEmail);
     const setupDetails = sanitizePlainText_(formObject.setupDetails, 1000);
-    const headcount = parseInt(formObject.headcount, 10);
-    const signatureBase64 = normalizeText_(formObject.signatureBase64);
+    const headcount = Number(formObject.headcount);
+    let signatureBase64 = normalizeText_(formObject.signatureBase64);
 
     if (!topic) throw new Error("กรุณาระบุหัวข้อการประชุม");
     if (!requester) throw new Error("กรุณาระบุชื่อผู้จอง");
     if (!isValidEmail_(requesterEmail)) throw new Error("รูปแบบอีเมลผู้จองไม่ถูกต้อง");
-    if (isNaN(headcount) || headcount < 1) throw new Error("จำนวนผู้เข้าประชุมต้องเป็นตัวเลขมากกว่า 0");
+    if (!Number.isInteger(headcount) || headcount < 1) throw new Error("จำนวนผู้เข้าประชุมต้องเป็นตัวเลขมากกว่า 0");
     if (room.capacity > 0 && headcount > room.capacity) {
       throw new Error(`จำนวนผู้เข้าประชุม (${headcount} คน) เกินความจุของห้อง ${room.roomName} (${room.capacity} คน)`);
     }
-    if (!signatureBase64 || !signatureBase64.startsWith("data:image/png;base64,")) {
-      throw new Error("ไม่พบลายเซ็นผู้จอง หรือรูปแบบลายเซ็นไม่ถูกต้อง จึงไม่สามารถสร้างบันทึกข้อความได้");
-    }
-
-    const newStart = new Date(formObject.startTime);
-    const newEnd = new Date(formObject.endTime);
+    const newStart = pronteraDate_(formObject.startTime);
+    const newEnd = pronteraDate_(formObject.endTime);
     if (isNaN(newStart.getTime()) || isNaN(newEnd.getTime())) throw new Error("รูปแบบวันเวลาไม่ถูกต้อง");
     if (newEnd <= newStart) throw new Error("เวลาสิ้นสุดการประชุมต้องอยู่หลังเวลาเริ่มต้น");
 
+    // Authorize receipt recovery before disclosing booking information.
+    if (!isEdit && (pronteraFlag_("PRONTERA_STRICT_REQUESTER_IDENTITY") || formObject.useSavedSignature===true) && requirePronteraPrincipal_() !== requesterEmail.toLowerCase()) throw new Error("PERMISSION_DENIED: อีเมลผู้จองต้องตรงกับบัญชี Workspace");
     const now = new Date();
-    if (!isEdit && newStart.getTime() < now.getTime() - (5 * 60 * 1000)) {
-      throw new Error("ไม่สามารถจองย้อนหลังได้");
-    }
-
-    const bookingIdForEdit = normalizeText_(formObject.bookingId);
+    const bookingIdForEdit = isEdit ? normalizeText_(formObject.bookingId) : "";
+    const receipt = isEdit ? null : pronteraReceipt_(formObject);
+    const receiptCol = receipt ? pronteraColumn_(bookSheet,'Prontera Submission Receipt') : 0;
     const existingBookings = bookSheet.getDataRange().getValues();
+    if (receipt) {
+      const previous = existingBookings.slice(1).find(row => String(getCell_(row,receiptCol)).startsWith(receipt.id+':'));
+      if (previous) {
+        if (getCell_(previous,receiptCol)!==receipt.value) throw new Error('รหัสส่งคำขอถูกใช้กับข้อมูลอื่นแล้ว');
+        return {status:'Saved',bookingId:normalizeText_(getCell_(previous,cols.id)),emailWarning:'พบคำขอที่บันทึกแล้ว ไม่ได้สร้างรายการซ้ำ กรุณาตรวจสอบสถานะในปฏิทิน',recovered:true};
+      }
+    }
+    if (!isEdit && newStart.getTime() < now.getTime() - 300000) throw new Error('ไม่สามารถจองย้อนหลังได้');
+    if (!isEdit && pronteraFlag_("PRONTERA_STRICT_REQUESTER_IDENTITY") && requirePronteraPrincipal_() !== requesterEmail.toLowerCase()) throw new Error("PERMISSION_DENIED: อีเมลผู้จองต้องตรงกับบัญชี Workspace");
+    if(formObject.useSavedSignature===true && requirePronteraPrincipal_() !== requesterEmail.toLowerCase()) throw new Error("PERMISSION_DENIED: ใช้ลายเซ็นได้เฉพาะบัญชีของผู้จอง");
+    const savedSignature = pronteraResolveSignature_(formObject,requesterEmail);
+    if(savedSignature) signatureBase64=savedSignature.data;
+    if(!signatureBase64 || !signatureBase64.startsWith('data:image/png;base64,')) throw new Error('กรุณาลงลายเซ็นผู้จอง');
+    if(!savedSignature) pronteraPng_(signatureBase64);
     let existingRowIndex = -1;
     let existingLayoutUrl = "";
 
@@ -2259,6 +2317,7 @@ function saveBooking(formObject, sessionToken) {
       const row = existingBookings[i];
       const bId = normalizeText_(getCell_(row, cols.id));
       if (isEdit && bId === bookingIdForEdit) {
+        if(savedSignature && normalizeText_(getCell_(row,cols.requesterEmail)).toLowerCase() !== savedSignature.profile.email) throw new Error("PERMISSION_DENIED: ไม่สามารถใช้ลายเซ็นส่วนบุคคลแทนผู้จองเดิม");
         existingRowIndex = i + 1;
         existingLayoutUrl = normalizeText_(getCell_(row, cols.layoutUrl));
       }
@@ -2271,7 +2330,7 @@ function saveBooking(formObject, sessionToken) {
       if (!bId || isNaN(existingStart.getTime()) || isNaN(existingEnd.getTime())) continue;
 
       if (existingRoomId === room.roomId && isBookingBlockingRoom_(status) && bId !== bookingIdForEdit) {
-        if (newStart.getTime() < existingEnd.getTime() && newEnd.getTime() > existingStart.getTime()) {
+        if (pronteraOverlaps_(newStart,newEnd,existingStart,existingEnd)) {
           throw new Error(`ห้องไม่ว่างในช่วงเวลาดังกล่าว (ชนกับรายการ: ${normalizeText_(getCell_(row, cols.topic))} เวลา ${existingStart.toLocaleTimeString('th-TH',{hour:'2-digit', minute:'2-digit'})} - ${existingEnd.toLocaleTimeString('th-TH',{hour:'2-digit', minute:'2-digit'})})`);
         }
       }
@@ -2298,7 +2357,7 @@ function saveBooking(formObject, sessionToken) {
     const bookingId = isEdit ? bookingIdForEdit : generateBookingId_(bookSheet, cols);
 
     // เก็บไฟล์ลายเซ็นไว้ใน Drive เพื่อให้ Admin สามารถสร้าง PDF บันทึกข้อความใหม่จากเลขที่การจองได้ภายหลัง
-    const signatureResult = uploadSignatureImageToDrive_(signatureBase64, bookingId);
+    const signatureResult = savedSignature ? pronteraSignatureSnapshot_(savedSignature,bookingId) : uploadSignatureImageToDrive_(signatureBase64, bookingId);
     signatureFileIdForRollback = signatureResult.fileId || "";
 
     const normalizedForm = Object.assign({}, formObject, {
@@ -2315,42 +2374,52 @@ function saveBooking(formObject, sessionToken) {
 
     // บันทึกข้อความเป็นเอกสารหลักของกระบวนการจอง จึงต้องสร้างให้สำเร็จก่อนเขียนฐานข้อมูล
     // หากสร้างไม่สำเร็จ ระบบจะหยุดทันที ไม่แจ้งสำเร็จหลอก และไม่บันทึกรายการจองใหม่ที่เอกสารไม่ครบ
-    const memoResult = generatePDFMemo(normalizedForm, bookingId, newStart, newEnd);
+    const memoResult = generatePDFMemo_(normalizedForm, bookingId, newStart, newEnd);
     if (!memoResult || !memoResult.blob || !memoResult.url) {
       throw new Error("ไม่สามารถสร้างไฟล์ PDF บันทึกข้อความได้ กรุณาตรวจสอบ Template Slide, โฟลเดอร์ PDF และสิทธิ์การเข้าถึง Drive");
     }
     memoPdfFileIdForRollback = memoResult.fileId || "";
 
     if (formObject.setupFileBase64) {
-      fileUrl = uploadSetupFileToDrive(formObject.setupFileBase64, formObject.setupFileName);
+      fileUrl = uploadSetupFileToDrive_(formObject.setupFileBase64, formObject.setupFileName);
     }
 
+    const profileCol = savedSignature ? pronteraColumn_(bookSheet,'Prontera Signature Version') : 0;
+    const profileValue = savedSignature ? savedSignature.profile.id+':'+savedSignature.profile.version : '';
     const fmtOptions = { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Bangkok' };
 
     if (isEdit) {
+      // Invalidate old approval links BEFORE any change to the request.
+      editingBookingId = bookingIdForEdit;
+      writeAttempted = true;
+      setBookingStatusByRow_(bookSheet, cols, existingRowIndex, BOOKING_STATUS.APPROVAL_ERROR, "กำลังแก้ไขรายการและสร้าง Workflow ใหม่");
+      supersedeApprovalFlowsForBooking_(bookingIdForEdit, "UPDATE_BOOKING | แก้ไขรายการจอง", currentUser);
       bookSheet.getRange(existingRowIndex, cols.roomId).setValue(room.roomId);
       bookSheet.getRange(existingRowIndex, cols.roomName).setValue(room.roomName);
-      bookSheet.getRange(existingRowIndex, cols.topic).setValue(topic);
-      bookSheet.getRange(existingRowIndex, cols.requester).setValue(requester);
+      bookSheet.getRange(existingRowIndex, cols.topic).setValue(pronteraSheetText_(topic));
+      bookSheet.getRange(existingRowIndex, cols.requester).setValue(pronteraSheetText_(requester));
       bookSheet.getRange(existingRowIndex, cols.start).setValue(newStart);
       bookSheet.getRange(existingRowIndex, cols.end).setValue(newEnd);
       bookSheet.getRange(existingRowIndex, cols.headcount).setValue(headcount);
       bookSheet.getRange(existingRowIndex, cols.requesterEmail).setValue(requesterEmail);
       bookSheet.getRange(existingRowIndex, cols.reminder30).setValue(reminderStatus);
-      bookSheet.getRange(existingRowIndex, cols.setupDetails).setValue(setupDetails);
+      bookSheet.getRange(existingRowIndex, cols.setupDetails).setValue(pronteraSheetText_(setupDetails));
       bookSheet.getRange(existingRowIndex, cols.lastUpdated).setValue(new Date());
       bookSheet.getRange(existingRowIndex, cols.memoPdfUrl).setValue(memoResult.url);
       bookSheet.getRange(existingRowIndex, cols.signatureFileId).setValue(signatureResult.fileId);
       bookSheet.getRange(existingRowIndex, cols.signatureImageUrl).setValue(signatureResult.url);
+      if (profileCol) bookSheet.getRange(existingRowIndex,profileCol).setValue(profileValue);
+      else { const oldProfileCol=getHeaderMap_(bookSheet)["prontera signature version"]; if(oldProfileCol) bookSheet.getRange(existingRowIndex,oldProfileCol).clearContent(); }
       if (fileUrl) bookSheet.getRange(existingRowIndex, cols.layoutUrl).setValue(fileUrl);
       setBookingStatusByRow_(bookSheet, cols, existingRowIndex, BOOKING_STATUS.PENDING_APPROVAL, "แก้ไขรายการและเริ่มกระบวนการลงนามใหม่");
       if (cols.evalSent) bookSheet.getRange(existingRowIndex, cols.evalSent).setValue('');
       if (cols.summarySent) bookSheet.getRange(existingRowIndex, cols.summarySent).setValue('');
       databaseWritten = true;
+      committedBookingId = bookingIdForEdit;
 
-      logAction(currentUser, "Update Booking", `แก้ไขการจอง ID: ${bookingIdForEdit} และสร้าง PDF บันทึกข้อความ: ${memoResult.url}`);
+      pronteraBestEffortLog_(currentUser, "Update Booking", `แก้ไขการจอง ID: ${bookingIdForEdit} และสร้าง PDF บันทึกข้อความ: ${memoResult.url}` + (savedSignature ? ` | VERIFIED_SIGNATURE ${savedSignature.profile.email} ${profileValue}` : ""));
 
-      const notificationReport = sendEmailNotifications({
+      const notificationReport = pronteraBookingNotifications_({
         bookingId: bookingIdForEdit,
         topic: topic,
         requester: requester,
@@ -2366,8 +2435,9 @@ function saveBooking(formObject, sessionToken) {
         memoPdfName: memoResult.name
       }, memoResult.blob, layoutBlob);
 
+
       const approvalReport = startApprovalWorkflowSafely_(bookingIdForEdit, currentUser, "UPDATE_BOOKING");
-      const approvalWarning = approvalReport.created ? "" : " ระบบรับการจองและกันห้องไว้แล้ว แต่กระบวนการลงนามมีปัญหา ระบบตั้งสถานะเป็น Approval Error กรุณาให้ผู้ดูแลระบบตรวจสอบ";
+      const approvalWarning = approvalReport.created ? (approvalReport.emailSent===false ? " สร้าง Workflow แล้ว แต่ส่งอีเมลผู้ลงนามขั้นแรกไม่สำเร็จ กรุณาตรวจสอบ Approval Center" : "") : " ระบบรับการจองและกันห้องไว้แล้ว แต่กระบวนการลงนามมีปัญหา ระบบตั้งสถานะเป็น Approval Error กรุณาให้ผู้ดูแลระบบตรวจสอบ";
 
       return {
         status: "Updated",
@@ -2380,35 +2450,21 @@ function saveBooking(formObject, sessionToken) {
     }
 
     const timestamp = new Date();
-    bookSheet.appendRow([
-      bookingId,
-      timestamp,
-      room.roomId,
-      room.roomName,
-      topic,
-      requester,
-      newStart,
-      newEnd,
-      headcount,
-      BOOKING_STATUS.PENDING_APPROVAL,
-      requesterEmail,
-      '',
-      reminderStatus,
-      setupDetails,
-      fileUrl,
-      '',
-      '',
-      '',
-      memoResult.url,
-      signatureResult.fileId,
-      signatureResult.url
-    ]);
+    const bookingRow = Array(bookSheet.getLastColumn()).fill('');
+    const bookingFields = {id:bookingId,timestamp:timestamp,roomId:room.roomId,roomName:room.roomName,topic:pronteraSheetText_(topic),requester:pronteraSheetText_(requester),start:newStart,end:newEnd,headcount:headcount,status:BOOKING_STATUS.PENDING_APPROVAL,requesterEmail:requesterEmail,evalSent:'',reminder30:reminderStatus,setupDetails:pronteraSheetText_(setupDetails),layoutUrl:fileUrl,summarySent:'',cancelReason:'',lastUpdated:timestamp,memoPdfUrl:memoResult.url,signatureFileId:signatureResult.fileId,signatureImageUrl:signatureResult.url};
+    if(new Set(Object.values(cols)).size!==Object.keys(cols).length)throw new Error('หัวตาราง Bookings ซ้ำหรือไม่ถูกต้อง');
+    Object.keys(bookingFields).forEach(k=>{if(!cols[k])throw new Error('ไม่พบคอลัมน์ '+k);bookingRow[cols[k]-1]=bookingFields[k];});
+    if(receiptCol) { while(bookingRow.length<receiptCol)bookingRow.push(''); bookingRow[receiptCol-1]=receipt.value; }
+    if(profileCol) { while(bookingRow.length<profileCol)bookingRow.push(''); bookingRow[profileCol-1]=profileValue; }
+    writeAttempted = true;
+    bookSheet.appendRow(bookingRow);
 
     databaseWritten = true;
+    committedBookingId = bookingId;
 
-    logAction(currentUser, 'New Booking', `จองห้อง ${room.roomName} โดย ${requester} และสร้าง PDF บันทึกข้อความ: ${memoResult.url}`);
+    pronteraBestEffortLog_(currentUser, 'New Booking', `จองห้อง ${room.roomName} โดย ${requester} และสร้าง PDF บันทึกข้อความ: ${memoResult.url}` + (savedSignature ? ` | VERIFIED_SIGNATURE ${savedSignature.profile.email} ${profileValue}` : ''));
 
-    const notificationReport = sendEmailNotifications({
+    const notificationReport = pronteraBookingNotifications_({
       bookingId: bookingId,
       topic: topic,
       requester: requester,
@@ -2424,8 +2480,9 @@ function saveBooking(formObject, sessionToken) {
       memoPdfName: memoResult.name
     }, memoResult.blob, layoutBlob);
 
+
     const approvalReport = startApprovalWorkflowSafely_(bookingId, currentUser, "NEW_BOOKING");
-    const approvalWarning = approvalReport.created ? "" : " ระบบรับการจองและกันห้องไว้แล้ว แต่กระบวนการลงนามมีปัญหา ระบบตั้งสถานะเป็น Approval Error กรุณาให้ผู้ดูแลระบบตรวจสอบ";
+    const approvalWarning = approvalReport.created ? (approvalReport.emailSent===false ? " สร้าง Workflow แล้ว แต่ส่งอีเมลผู้ลงนามขั้นแรกไม่สำเร็จ กรุณาตรวจสอบ Approval Center" : "") : " ระบบรับการจองและกันห้องไว้แล้ว แต่กระบวนการลงนามมีปัญหา ระบบตั้งสถานะเป็น Approval Error กรุณาให้ผู้ดูแลระบบตรวจสอบ";
 
     return {
       status: "Saved",
@@ -2436,11 +2493,19 @@ function saveBooking(formObject, sessionToken) {
       emailWarning: (notificationReport.adminSent ? "" : "บันทึกข้อมูลและสร้าง PDF สำเร็จแล้ว แต่ส่งอีเมลแนบ PDF ถึงรายชื่อในชีท Admin ไม่สำเร็จ กรุณาตรวจสอบชีท Logs") + approvalWarning
     };
   } catch (error) {
+    // Never leave an interrupted edit with a valid old approval link.
+    if (editingBookingId && !databaseWritten) {
+      try { markBookingApprovalError_(editingBookingId, error.message, 'System'); } catch (ignore) {}
+    }
+    if (committedBookingId) {
+      pronteraBestEffortLog_('System','Booking post-commit error',committedBookingId+' | '+error.message);
+      return {status:editingBookingId?'Updated':'Saved',bookingId:committedBookingId,emailWarning:'บันทึกข้อมูลแล้ว แต่ขั้นตอนต่อเนื่องมีปัญหา กรุณาให้เจ้าหน้าที่ตรวจสอบ Workflow และเอกสาร',recovered:true};
+    }
     // หากสร้าง PDF แล้วแต่เกิดปัญหาก่อนบันทึกฐานข้อมูล ให้ย้าย PDF ที่สร้างค้างไว้ลงถังขยะเพื่อลดไฟล์กำพร้า
-    if (memoPdfFileIdForRollback && !databaseWritten) {
+    if (memoPdfFileIdForRollback && !databaseWritten && !writeAttempted) {
       try { DriveApp.getFileById(memoPdfFileIdForRollback).setTrashed(true); } catch (cleanupErr) {}
     }
-    if (signatureFileIdForRollback && !databaseWritten) {
+    if (signatureFileIdForRollback && !databaseWritten && !writeAttempted) {
       try { DriveApp.getFileById(signatureFileIdForRollback).setTrashed(true); } catch (cleanupErr) {}
     }
     throw new Error(error.message);
@@ -2562,7 +2627,7 @@ function getMemoPdfBlobForEmail_(data, fallbackBlob) {
     try {
       return DriveApp.getFileById(data.memoPdfFileId).getBlob().setName(pdfName);
     } catch (e) {
-      logAction('System', 'Memo PDF Blob Fallback', `เปิด PDF จาก fileId ไม่สำเร็จ Booking ID: ${data.bookingId} | ${e.message}`);
+      logAction_('System', 'Memo PDF Blob Fallback', `เปิด PDF จาก fileId ไม่สำเร็จ Booking ID: ${data.bookingId} | ${e.message}`);
     }
   }
 
@@ -2599,13 +2664,13 @@ function sendAdminMemoEmail_(data, pdfBlob, layoutBlob) {
   };
   if (adminRecipients.cc) mailOptionsAdmin.cc = adminRecipients.cc;
 
-  MailApp.sendEmail(mailOptionsAdmin);
+  pronteraSendMail_(mailOptionsAdmin);
 
-  logAction('System', 'Admin Memo Email Sent', `Booking ID: ${data.bookingId} | To: ${adminRecipients.to}${adminRecipients.cc ? ' | Cc: ' + adminRecipients.cc : ''} | Attachments: ${attachments.length}`);
+  logAction_('System', 'Admin Memo Email Sent', `Booking ID: ${data.bookingId} | To: ${adminRecipients.to}${adminRecipients.cc ? ' | Cc: ' + adminRecipients.cc : ''} | Attachments: ${attachments.length}`);
   return adminRecipients;
 }
 
-function sendEmailNotifications(data, pdfBlob = null, layoutBlob = null) {
+function sendEmailNotifications_(data, pdfBlob = null, layoutBlob = null) {
   const isUpdate = data.isUpdate || false;
   const subjectUserPrefix = isUpdate ? '✏️ แก้ไขการจองห้องประชุม' : '✅ ยืนยันการจองห้องประชุม';
   const subjectOfficerPrefix = isUpdate ? '📝 มีการแก้ไขการจอง' : '📢 มีการจองห้องใหม่';
@@ -2630,13 +2695,13 @@ function sendEmailNotifications(data, pdfBlob = null, layoutBlob = null) {
     report.adminCc = adminRecipients.cc;
   } catch (adminErr) {
     report.errors.push('Admin memo email: ' + adminErr.message);
-    logAction('System', 'Admin Memo Email Error', `Booking ID: ${data.bookingId} | ${adminErr.message}`);
+    logAction_('System', 'Admin Memo Email Error', `Booking ID: ${data.bookingId} | ${adminErr.message}`);
   }
 
   // 2) ผู้จอง: ส่งอีเมลยืนยัน/แจ้งแก้ไขเท่านั้น ไม่แนบบันทึกข้อความ
   if (isValidEmail_(data.requesterEmail)) {
     try {
-      MailApp.sendEmail({
+      pronteraSendMail_({
         to: data.requesterEmail,
         subject: `${subjectUserPrefix}: ${data.topic}`,
         htmlBody: createEmailTemplate(data, 'user'),
@@ -2645,7 +2710,7 @@ function sendEmailNotifications(data, pdfBlob = null, layoutBlob = null) {
       report.requesterSent = true;
     } catch (userErr) {
       report.errors.push('Requester email: ' + userErr.message);
-      logAction('System', 'Requester Email Error', `Booking ID: ${data.bookingId} | ${userErr.message}`);
+      logAction_('System', 'Requester Email Error', `Booking ID: ${data.bookingId} | ${userErr.message}`);
     }
   }
 
@@ -2660,13 +2725,13 @@ function sendEmailNotifications(data, pdfBlob = null, layoutBlob = null) {
         name: 'Meeting Room System'
       };
       if (officerRecipients.cc) mailOptionsOfficer.cc = officerRecipients.cc;
-      MailApp.sendEmail(mailOptionsOfficer);
+      pronteraSendMail_(mailOptionsOfficer);
       report.officerSent = true;
       report.officerTo = officerRecipients.to;
       report.officerCc = officerRecipients.cc;
     } catch (officerErr) {
       report.errors.push('Officer email: ' + officerErr.message);
-      logAction('System', 'Officer Email Error', `Booking ID: ${data.bookingId} | ${officerErr.message}`);
+      logAction_('System', 'Officer Email Error', `Booking ID: ${data.bookingId} | ${officerErr.message}`);
     }
   }
 
@@ -2712,7 +2777,7 @@ function sendCancellationNotifications_(data) {
   const subject = `❌ แจ้งยกเลิกการจองห้องประชุม: ${data.topic}`;
 
   if (isValidEmail_(data.requesterEmail)) {
-    MailApp.sendEmail({
+    pronteraSendMail_({
       to: data.requesterEmail,
       subject: subject,
       htmlBody: buildCancellationEmailHtml_(data, 'user'),
@@ -2729,7 +2794,7 @@ function sendCancellationNotifications_(data) {
       name: "Meeting Room System"
     };
     if (officerRecipients.cc) mailOptionsOfficer.cc = officerRecipients.cc;
-    MailApp.sendEmail(mailOptionsOfficer);
+    pronteraSendMail_(mailOptionsOfficer);
   }
 }
 
@@ -2763,7 +2828,8 @@ function getDashboardData(sessionToken) {
   const rejectedRows = rows.filter(row => normalizeBookingStatus_(getCell_(row, cols.status)) === BOOKING_STATUS.REJECTED);
   const todayRows = activeRows.filter(row => {
     const start = new Date(getCell_(row, cols.start));
-    return !isNaN(start.getTime()) && start >= todayStart && start < todayEnd;
+    const end = new Date(getCell_(row,cols.end));
+    return Number.isFinite(start.getTime()) && Number.isFinite(end.getTime()) && pronteraOverlaps_(todayStart,todayEnd,start,end);
   });
   const upcomingRows = activeRows.filter(row => {
     const start = new Date(getCell_(row, cols.start));
@@ -2771,7 +2837,7 @@ function getDashboardData(sessionToken) {
   });
   const waitingEvalRows = approvedRows.filter(row => {
     const end = new Date(getCell_(row, cols.end));
-    return !isNaN(end.getTime()) && end < now && !isSent_(getCell_(row, cols.evalSent));
+    return !isNaN(end.getTime()) && end < now && now.getTime()-end.getTime() <= 5*86400000 && !isSent_(getCell_(row, cols.evalSent));
   });
 
   const usageByRoom = {};
@@ -2951,9 +3017,10 @@ function adminGenerateMemoPdf(bookingId, sessionToken) {
         roomId: normalizeText_(getCell_(row, cols.roomId)),
         roomName: normalizeText_(getCell_(row, cols.roomName)),
         setupDetails: sanitizePlainText_(getCell_(row, cols.setupDetails), 1000),
-        signatureFileId: signatureFileId
+        signatureFileId: signatureFileId,
+        signatureProfileVersion: normalizeText_(getCell_(row,getHeaderMap_(bookSheet)["prontera signature version"]||0))
       };
-      memoResult = generatePDFMemo(formObject, safeBookingId, startDate, endDate);
+      memoResult = generatePDFMemo_(formObject, safeBookingId, startDate, endDate);
     } else if (existingMemoPdfUrl) {
       // รายการเก่าที่สร้างก่อนระบบเก็บลายเซ็นไว้ อาจสร้างใหม่จาก Template ไม่ได้
       // จึงทำสำเนาจาก PDF เดิมแทน เพื่อให้เจ้าหน้าที่ได้ไฟล์ PDF ใหม่โดยไม่ต้องส่งอีเมล
@@ -2972,7 +3039,7 @@ function adminGenerateMemoPdf(bookingId, sessionToken) {
     bookSheet.getRange(rowNo, cols.lastUpdated).setValue(new Date());
     databaseWritten = true;
 
-    logAction(currentUser, 'Admin Generate Memo PDF', `สร้าง PDF บันทึกข้อความใหม่ Booking ID: ${safeBookingId} | Method: ${method} | URL: ${memoResult.url}`);
+    logAction_(currentUser, 'Admin Generate Memo PDF', `สร้าง PDF บันทึกข้อความใหม่ Booking ID: ${safeBookingId} | Method: ${method} | URL: ${memoResult.url}`);
 
     return {
       status: 'Success',
@@ -2999,7 +3066,7 @@ function adminGenerateMemoPdf(bookingId, sessionToken) {
 // 📄 PDF GENERATION & UTILS
 // ==========================================
 
-function generatePDFMemo(formObject, bookingId, newStart, newEnd) {
+function generatePDFMemo_(formObject, bookingId, newStart, newEnd) {
   if (!formObject.signatureBase64 && !formObject.signatureFileId) {
     throw new Error("ไม่พบลายเซ็นผู้จอง จึงไม่สามารถสร้าง PDF บันทึกข้อความได้");
   }
@@ -3012,8 +3079,8 @@ function generatePDFMemo(formObject, bookingId, newStart, newEnd) {
 
   let copyFile = null;
   try {
-    const templateFile = DriveApp.getFileById(TEMPLATE_SLIDE_ID);
-    const folder = DriveApp.getFolderById(PDF_FOLDER_ID);
+    const templateFile = DriveApp.getFileById(pronteraConfig_("PRONTERA_TEMPLATE_SLIDE_ID",TEMPLATE_SLIDE_ID));
+    const folder = DriveApp.getFolderById(pronteraConfig_("PRONTERA_PDF_FOLDER_ID",PDF_FOLDER_ID));
     copyFile = templateFile.makeCopy(`TEMP_บันทึกข้อความ_${bookingId}`, folder);
     const presentation = SlidesApp.openById(copyFile.getId());
 
@@ -3111,7 +3178,7 @@ function generatePDFMemo(formObject, bookingId, newStart, newEnd) {
     const pdfBlob = copyFile.getAs(MimeType.PDF).setName(pdfName);
     const pdfFile = folder.createFile(pdfBlob);
     try {
-      pdfFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+      pronteraShareDocument_(pdfFile);
     } catch (shareErr) {
       console.warn("ไม่สามารถตั้งค่าแชร์ PDF เป็น anyone-with-link ได้: " + shareErr.message);
     }
@@ -3379,15 +3446,16 @@ function buildApprovalApproverConfigValidationResults_() {
 function validateApprovalApproverConfig(sessionToken) {
   const user = requireUser_(sessionToken, ['Admin']);
   const results = buildApprovalApproverConfigValidationResults_();
-  logAction(formatUserForLog_(user), 'Validate Approval Approver Config', `ตรวจสอบผู้ลงนาม Approval จำนวน ${results.length} รายการ`);
+  logAction_(formatUserForLog_(user), 'Validate Approval Approver Config', `ตรวจสอบผู้ลงนาม Approval จำนวน ${results.length} รายการ`);
   return results;
 }
 
 // ใช้รันจาก Apps Script Editor โดยตรงเท่านั้น เพื่อทดสอบค่าผู้ลงนามโดยไม่ต้องมี sessionToken จากหน้าเว็บ
 // ไม่ผ่อนสิทธิ์ของ validateApprovalApproverConfig(sessionToken) เดิม เพื่อไม่ให้หน้าเว็บสาธารณะเรียกข้ามระบบ Login ได้
 function validateApprovalApproverConfigForEditor() {
+  requirePronteraEditor_();
   const results = buildApprovalApproverConfigValidationResults_();
-  logAction('Apps Script Editor', 'Validate Approval Approver Config (Manual)', `ตรวจสอบผู้ลงนาม Approval จำนวน ${results.length} รายการ`);
+  logAction_('Apps Script Editor', 'Validate Approval Approver Config (Manual)', `ตรวจสอบผู้ลงนาม Approval จำนวน ${results.length} รายการ`);
   return results;
 }
 
@@ -3423,6 +3491,7 @@ function getBookingRecordObject_(bookingId) {
         layoutUrl: normalizeText_(getCell_(row, cols.layoutUrl)),
         initialMemoPdfUrl: normalizeText_(getCell_(row, cols.memoPdfUrl)),
         signatureFileId: normalizeText_(getCell_(row, cols.signatureFileId)),
+        signatureProfileVersion: normalizeText_(getCell_(row,getHeaderMap_(sheet)["prontera signature version"]||0)),
         signatureImageUrl: normalizeText_(getCell_(row, cols.signatureImageUrl))
       };
     }
@@ -3431,7 +3500,11 @@ function getBookingRecordObject_(bookingId) {
 }
 
 function createApprovalId_() {
-  return 'AP-' + Utilities.formatDate(new Date(), Session.getScriptTimeZone() || 'Asia/Bangkok', 'yyyyMMddHHmmss') + '-' + Math.floor(1000 + Math.random() * 9000);
+  const sheet=SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_APPROVAL_FLOW), cols=getApprovalFlowCols_(sheet);
+  const ids=new Set(sheet.getDataRange().getValues().slice(1).map(r=>normalizeText_(getCell_(r,cols.approvalId))));
+  const prefix='AP-'+Utilities.formatDate(new Date(),Session.getScriptTimeZone()||'Asia/Bangkok','yyyyMMddHHmmss')+'-';
+  for(let i=0;i<100;i++){const id=prefix+Math.floor(1000+Math.random()*9000);if(!ids.has(id))return id;}
+  throw new Error('ไม่สามารถสร้างรหัส Approval ที่ไม่ซ้ำได้');
 }
 
 function createApprovalToken_() {
@@ -3443,8 +3516,8 @@ function logApproval_(approvalId, bookingId, action, actorName, actorEmail, step
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(SHEET_APPROVAL_LOGS);
   sheet.appendRow([
-    new Date(), approvalId, bookingId, sanitizePlainText_(action, 120), sanitizePlainText_(actorName, 200),
-    sanitizePlainText_(actorEmail, 200), stepNo || '', sanitizePlainText_(details, 1000)
+    new Date(), approvalId, bookingId, pronteraSheetText_(sanitizePlainText_(action, 120)), pronteraSheetText_(sanitizePlainText_(actorName, 200)),
+    pronteraSheetText_(sanitizePlainText_(actorEmail, 200)), stepNo || '', pronteraSheetText_(sanitizePlainText_(details, 1000))
   ]);
 }
 
@@ -3569,6 +3642,9 @@ function cancelApprovalFlowForBooking_(bookingId, reason, actor, keepApprovalId)
 // ใช้รันจาก Apps Script Editor ครั้งเดียวหลัง deploy หากเคยมีรายการ Cancelled ก่อนแก้ไขชุดนี้
 // ฟังก์ชันนี้จะปิด ApprovalFlow/ApprovalSteps ที่ยังเปิดอยู่ของรายการจองที่ถูกยกเลิกแล้ว โดยไม่แตะรายการที่ Completed/Rejected/Superseded
 function repairCancelledBookingApprovalFlows() {
+  requirePronteraEditor_();
+  const lock=LockService.getScriptLock(); if(!lock.tryLock(10000))throw new Error("ระบบกำลังทำงาน");
+  try {
   ensureDatabaseSchema_();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const bookSheet = ss.getSheetByName(SHEET_BOOKINGS);
@@ -3584,8 +3660,9 @@ function repairCancelledBookingApprovalFlows() {
       repaired.push({ bookingId: bookingId, cancelledFlows: result.cancelledCount });
     }
   }
-  logAction("System Repair", "Repair Cancelled Approval Flows", "จำนวนรายการที่ซ่อม: " + repaired.length);
+  logAction_("System Repair", "Repair Cancelled Approval Flows", "จำนวนรายการที่ซ่อม: " + repaired.length);
   return { repairedCount: repaired.length, repaired: repaired };
+  } finally {lock.releaseLock();}
 }
 
 function supersedeApprovalFlowsForBooking_(bookingId, reason, actor, keepApprovalId) {
@@ -3921,8 +3998,8 @@ function resumeOrCreateApprovalWorkflowForBooking_(bookingId, actor, reason) {
     return Object.assign({}, created, {
       action: 'CREATED_NEW',
       resumed: false,
-      emailSent: true,
-      message: 'สร้าง Workflow ใหม่และส่งอีเมลให้ผู้ลงนามขั้นตอนที่ 1 แล้ว'
+      emailSent: created.emailSent !== false,
+      message: created.emailSent === false ? 'สร้าง Workflow ใหม่แล้ว แต่ส่งอีเมลไม่สำเร็จ' : 'สร้าง Workflow ใหม่และส่งอีเมลให้ผู้ลงนามขั้นตอนที่ 1 แล้ว'
     });
   }
 
@@ -3964,7 +4041,7 @@ function resumeOrCreateApprovalWorkflowForBooking_(bookingId, actor, reason) {
   const currentStepNo = progress.firstUnsignedStepNo;
   const currentStep = progress.steps.find(step => step.stepNo === currentStepNo);
   if (!currentStep) throw new Error('ไม่พบขั้นตอนที่ต้องกู้คืน');
-  if (!isValidEmail_(currentStep.approverEmail)) {
+  if (!uniqueEmailList_([currentStep.approverEmail]).length) {
     throw new Error(`อีเมลผู้ลงนามขั้นตอนที่ ${currentStepNo} ไม่ถูกต้อง กรุณาแก้ไขข้อมูลผู้ลงนามก่อนกู้คืน Workflow`);
   }
 
@@ -4033,11 +4110,11 @@ function startApprovalWorkflowSafely_(bookingId, actor, reason) {
     }
     return result;
   } catch (e) {
-    logAction('System', 'Approval Workflow Start Error', `Booking ID: ${bookingId} | ${e.message}`);
+    pronteraBestEffortLog_('System', 'Approval Workflow Start Error', `Booking ID: ${bookingId} | ${e.message}`);
     try {
       markBookingApprovalError_(bookingId, e.message, actor || 'System');
     } catch (statusErr) {
-      logAction('System', 'Approval Workflow Status Error', `Booking ID: ${bookingId} | ${statusErr.message}`);
+      pronteraBestEffortLog_('System', 'Approval Workflow Status Error', `Booking ID: ${bookingId} | ${statusErr.message}`);
     }
     return { created: false, error: e.message };
   }
@@ -4058,7 +4135,7 @@ function createApprovalFlowForBooking_(bookingId, actor, reason) {
   const steps = resolveApprovalStepConfigs_(booking);
   if (!Array.isArray(steps) || steps.length !== 3) throw new Error('ไม่สามารถกำหนดผู้ลงนามได้ครบ 3 ขั้น');
   steps.forEach(step => {
-    if (!step.stepNo || !step.stepName || !step.roleKey || !step.name || !isValidEmail_(step.email)) {
+    if (!step.stepNo || !step.stepName || !step.roleKey || !step.name || !uniqueEmailList_([step.email]).length) {
       throw new Error(`ข้อมูลผู้ลงนามขั้นที่ ${step.stepNo || '-'} ไม่ครบถ้วนหรืออีเมลไม่ถูกต้อง`);
     }
   });
@@ -4081,8 +4158,9 @@ function createApprovalFlowForBooking_(bookingId, actor, reason) {
 
   supersedeApprovalFlowsForBooking_(bookingId, 'สร้างกระบวนการลงนามใหม่: ' + (reason || ''), actor || 'System', approvalId);
   logApproval_(approvalId, booking.bookingId, 'CREATE_APPROVAL_FLOW', actor || 'System', '', 1, 'เริ่มกระบวนการลงนามเอกสาร');
-  sendApprovalRequestEmail_(approvalId, 1);
-  return { created: true, approvalId: approvalId, currentStep: 1 };
+  let emailSent=true;
+  try { sendApprovalRequestEmail_(approvalId, 1); } catch(e) { emailSent=false; pronteraBestEffortLog_('System','Approval first email error',approvalId+' | '+e.message); }
+  return { created: true, approvalId: approvalId, currentStep: 1, emailSent:emailSent };
 }
 
 function findApprovalFlowById_(approvalId) {
@@ -4105,12 +4183,13 @@ function findApprovalStepByToken_(token) {
   const cols = getApprovalStepCols_(sheet);
   const data = sheet.getDataRange().getValues();
   const safeToken = normalizeText_(token);
+  if(!safeToken) throw new Error("ลิงก์ลงนามไม่ถูกต้องหรือหมดอายุ");
+  const matches=[];
   for (let i = 1; i < data.length; i++) {
-    if (normalizeText_(getCell_(data[i], cols.token)) === safeToken) {
-      return { sheet: sheet, cols: cols, rowNo: i + 1, row: data[i] };
-    }
+    if (normalizeText_(getCell_(data[i], cols.token)) === safeToken) matches.push({sheet:sheet,cols:cols,rowNo:i+1,row:data[i]});
   }
-  throw new Error('ลิงก์ลงนามไม่ถูกต้องหรือหมดอายุ');
+  if(matches.length!==1) throw new Error('ลิงก์ลงนามไม่ถูกต้องหรือหมดอายุ');
+  return matches[0];
 }
 
 function getApprovalStepsForApproval_(approvalId) {
@@ -4179,13 +4258,16 @@ function getApprovalDetailsByToken(token) {
     message = 'ลิงก์ลงนามหมดอายุแล้ว กรุณาติดต่อผู้ดูแลระบบให้ส่งลิงก์ใหม่';
   } else if (available) {
     try {
+      if (Number(getCell_(flow.row,fCols.currentStep)) !== stepNo) throw new Error('ขั้นตอน Workflow ไม่สอดคล้อง กรุณาติดต่อผู้ดูแลระบบ');
       assertApprovalStepSequence_(approvalId, stepNo);
+      pronteraApproverIdentity_(getCell_(step.row,sCols.approverEmail),false);
     } catch (e) {
       available = false;
       message = e.message;
     }
   }
 
+  if(!available) return {available:false,message:message};
   const similarInfo = getSimilarBookingWarningForForm({
     bookingId: bookingId,
     topic: booking.topic,
@@ -4250,21 +4332,22 @@ function uploadApprovalSignature_(base64Data, filename, approvalId, stepNo) {
   const ext = mime === 'image/png' ? 'png' : 'jpg';
   const safeName = sanitizePlainText_(filename || `signature_${approvalId}_${stepNo}.${ext}`, 120);
   const blob = Utilities.newBlob(bytes, mime, safeName);
-  const folder = DriveApp.getFolderById(FINAL_SIGNED_MEMO_FOLDER_ID);
-  const file = folder.createFile(blob).setName(`ลายเซ็น_${approvalId}_ขั้นตอน${stepNo}_${safeName}`);
-  try { file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW); } catch (e) {}
+  const folder = DriveApp.getFolderById(pronteraConfig_("PRONTERA_FINAL_SIGNED_MEMO_FOLDER_ID",FINAL_SIGNED_MEMO_FOLDER_ID));
+  const file = pronteraFlag_('PRONTERA_SIGNATURE_ENABLED') ? pronteraPrivateFile_(bytes,'manual-'+Utilities.getUuid()+'.'+ext,mime) : folder.createFile(blob).setName(`ลายเซ็น_${approvalId}_ขั้นตอน${stepNo}_${safeName}`);
+  // Never add public link sharing to new raw signature images.
   return { fileId: file.getId(), url: file.getUrl(), blob: blob };
 }
 
 function submitApprovalSignature(formObject) {
-  ensureDatabaseSchema_();
   const lock = LockService.getScriptLock();
   try {
     if (!lock.tryLock(10000)) throw new Error('ขณะนี้มีผู้ใช้งานระบบจำนวนมาก กรุณาลองใหม่อีกครั้ง');
+    ensureDatabaseSchema_();
     const token = normalizeText_(formObject.token);
     const mode = normalizeText_(formObject.action || 'approve');
-    const signerName = sanitizePlainText_(formObject.signerName, 200);
-    const signerEmail = normalizeText_(formObject.signerEmail);
+    if (!['approve','reject'].includes(mode)) throw new Error('การดำเนินการไม่ถูกต้อง');
+    let signerName = sanitizePlainText_(formObject.signerName, 200);
+    let signerEmail = normalizeText_(formObject.signerEmail);
     const comment = sanitizePlainText_(formObject.comment, 1000);
     if (!signerName) throw new Error('กรุณาระบุชื่อผู้ลงนาม');
     if (!isValidEmail_(signerEmail)) throw new Error('กรุณาระบุอีเมลผู้ลงนามให้ถูกต้อง');
@@ -4291,34 +4374,42 @@ function submitApprovalSignature(formObject) {
     }
     if (status !== 'PENDING') throw new Error('ขั้นตอนนี้ไม่อยู่ในสถานะรอลงนามแล้ว');
     if (isNaN(expireAt.getTime()) || expireAt < new Date()) throw new Error('ลิงก์ลงนามหมดอายุแล้ว');
+    if (Number(getCell_(flow.row,fCols.currentStep)) !== stepNo) throw new Error('ขั้นตอน Workflow ไม่สอดคล้อง กรุณาติดต่อผู้ดูแลระบบ');
     assertApprovalStepSequence_(approvalId, stepNo);
+    const expectedEmails = getCell_(step.row,sCols.approverEmail);
+    const verified = pronteraApproverIdentity_(expectedEmails,mode==='approve' && formObject.useSavedSignature===true);
+    if(verified) {
+      signerEmail=verified;
+      if(uniqueEmailList_([expectedEmails]).length===1) signerName=normalizeText_(getCell_(step.row,sCols.approverName))||signerName;
+    }
 
     if (mode === 'reject') {
       if (!comment) throw new Error('กรุณาระบุเหตุผลที่ไม่อนุมัติหรือส่งกลับแก้ไข');
       step.sheet.getRange(step.rowNo, sCols.status).setValue('REJECTED');
-      step.sheet.getRange(step.rowNo, sCols.comment).setValue(comment);
+      step.sheet.getRange(step.rowNo, sCols.comment).setValue(pronteraSheetText_(comment));
       step.sheet.getRange(step.rowNo, sCols.signedAt).setValue(new Date());
       step.sheet.getRange(step.rowNo, sCols.updatedAt).setValue(new Date());
       rejectApprovalFlow_(approvalId, bookingId, stepNo, comment, signerName, signerEmail);
       return { status: 'REJECTED', message: 'บันทึกการไม่อนุมัติเรียบร้อยแล้ว' };
     }
 
+    const savedSignature=pronteraResolveSignature_(formObject,expectedEmails);
     const signatureBase64 = normalizeText_(formObject.signatureBase64);
-    if (!signatureBase64) throw new Error('กรุณาลงลายเซ็นหรือแนบรูปลายเซ็นก่อนอนุมัติ');
-    const sig = uploadApprovalSignature_(signatureBase64, formObject.signatureFileName || 'signature.png', approvalId, stepNo);
-    const method = normalizeText_(formObject.signatureMethod || 'draw');
+    if (!savedSignature && !signatureBase64) throw new Error('กรุณาลงลายเซ็นหรือแนบรูปลายเซ็นก่อนอนุมัติ');
+    const sig = savedSignature ? pronteraSignatureSnapshot_(savedSignature,approvalId+'-'+stepNo) : uploadApprovalSignature_(signatureBase64, formObject.signatureFileName || 'signature.png', approvalId, stepNo);
+    const method = savedSignature ? 'profile:'+savedSignature.profile.id+':'+savedSignature.profile.version : (formObject.signatureMethod==='upload'?'upload':'draw');
 
-    step.sheet.getRange(step.rowNo, sCols.status).setValue('SIGNED');
-    step.sheet.getRange(step.rowNo, sCols.approverName).setValue(signerName);
+    step.sheet.getRange(step.rowNo, sCols.approverName).setValue(pronteraSheetText_(signerName));
     step.sheet.getRange(step.rowNo, sCols.approverEmail).setValue(signerEmail);
     step.sheet.getRange(step.rowNo, sCols.signMethod).setValue(method);
     step.sheet.getRange(step.rowNo, sCols.signatureFileId).setValue(sig.fileId);
     step.sheet.getRange(step.rowNo, sCols.signatureImageUrl).setValue(sig.url);
     step.sheet.getRange(step.rowNo, sCols.signedAt).setValue(new Date());
-    step.sheet.getRange(step.rowNo, sCols.comment).setValue(comment);
+    step.sheet.getRange(step.rowNo, sCols.comment).setValue(pronteraSheetText_(comment));
     step.sheet.getRange(step.rowNo, sCols.updatedAt).setValue(new Date());
 
-    logApproval_(approvalId, bookingId, 'SIGN_APPROVED', signerName, signerEmail, stepNo, comment || 'ลงนามอนุมัติ');
+    step.sheet.getRange(step.rowNo, sCols.status).setValue('SIGNED');
+    logApproval_(approvalId, bookingId, 'SIGN_APPROVED', signerName, signerEmail, stepNo, (comment || 'ลงนามอนุมัติ') + (savedSignature ? ' | '+method : ''));
     return advanceApprovalStep_(approvalId, stepNo, signerName, signerEmail);
   } finally {
     try { lock.releaseLock(); } catch (e) {}
@@ -4331,7 +4422,7 @@ function rejectApprovalFlow_(approvalId, bookingId, stepNo, reason, actorName, a
   flow.sheet.getRange(flow.rowNo, c.overallStatus).setValue('REJECTED');
   flow.sheet.getRange(flow.rowNo, c.updatedAt).setValue(new Date());
   flow.sheet.getRange(flow.rowNo, c.reason).setValue(reason);
-  try { markBookingRejected_(bookingId, reason); } catch (e) { logAction('System', 'Booking Reject Status Error', `Booking ID: ${bookingId} | ${e.message}`); }
+  try { markBookingRejected_(bookingId, reason); } catch (e) { logAction_('System', 'Booking Reject Status Error', `Booking ID: ${bookingId} | ${e.message}`); }
   logApproval_(approvalId, bookingId, 'REJECT_APPROVAL_FLOW', actorName, actorEmail, stepNo, reason);
   sendApprovalRejectedEmail_(approvalId, reason);
 }
@@ -4372,13 +4463,13 @@ function advanceApprovalStep_(approvalId, completedStepNo, actorName, actorEmail
         flow.sheet.getRange(flow.rowNo, c.currentApproverEmail).setValue(normalizeText_(getCell_(data[i], sCols.approverEmail)));
         flow.sheet.getRange(flow.rowNo, c.overallStatus).setValue(statusMap[nextStep]);
         flow.sheet.getRange(flow.rowNo, c.updatedAt).setValue(activatedAt);
-        sendApprovalRequestEmail_(approvalId, nextStep);
+        try { sendApprovalRequestEmail_(approvalId, nextStep); } catch(e) { logAction_('System','Approval Next Step Email Error',approvalId+' | '+e.message); return {status:'SIGNED',message:'ลงนามเรียบร้อยแล้ว แต่ส่งอีเมลขั้นถัดไปไม่สำเร็จ กรุณาแจ้งเจ้าหน้าที่ให้ส่งซ้ำ',nextStep:nextStep}; }
         return { status: 'SIGNED', message: 'ลงนามเรียบร้อยแล้ว และระบบส่งต่อเอกสารไปยังลำดับถัดไปแล้ว', nextStep: nextStep };
       }
     }
   }
   const finalResult = finalizeApprovalFlow_(approvalId, actorName, actorEmail);
-  return { status: 'COMPLETED', message: 'ลงนามครบทุกลำดับแล้ว ระบบสร้าง PDF ฉบับสมบูรณ์และแจ้งผู้จองเรียบร้อย', finalPdfUrl: finalResult.url };
+  return { status: 'COMPLETED', message: finalResult.notificationWarning || 'ลงนามครบทุกลำดับแล้ว ระบบสร้าง PDF ฉบับสมบูรณ์และแจ้งผู้จองเรียบร้อย', finalPdfUrl: finalResult.url };
 }
 
 function sendApprovalRequestEmail_(approvalId, stepNo) {
@@ -4433,7 +4524,7 @@ function sendApprovalRequestEmail_(approvalId, stepNo) {
   const subjectUseDate = useDate !== '-' ? ' | ใช้วันที่ ' + useDate : '';
   const options = { to: to, subject: `🖊️ เอกสารรอลงนาม: ${topic}${subjectUseDate} | ${bookingId}`, htmlBody: createBaseEmailTemplate('เอกสารขอใช้ห้องประชุมรอลงนาม', content, EMAIL_THEME.primary), name: 'Meeting Room System' };
   if (cc) options.cc = cc;
-  MailApp.sendEmail(options);
+  pronteraSendMail_(options);
   const count = parseInt(getCell_(row, sCols.notifyCount), 10) || 0;
   stepSheet.getRange(rowNo, sCols.notifyCount).setValue(count + 1);
   stepSheet.getRange(rowNo, sCols.lastNotifiedAt).setValue(new Date());
@@ -4553,8 +4644,8 @@ function generateFinalSignedMemoPdf_(approvalId) {
   const steps = getApprovalStepsForApproval_(approvalId);
   let copyFile = null;
   try {
-    const templateFile = DriveApp.getFileById(TEMPLATE_SLIDE_ID);
-    const folder = DriveApp.getFolderById(FINAL_SIGNED_MEMO_FOLDER_ID);
+    const templateFile = DriveApp.getFileById(pronteraConfig_("PRONTERA_TEMPLATE_SLIDE_ID",TEMPLATE_SLIDE_ID));
+    const folder = DriveApp.getFolderById(pronteraConfig_("PRONTERA_FINAL_SIGNED_MEMO_FOLDER_ID",FINAL_SIGNED_MEMO_FOLDER_ID));
     copyFile = templateFile.makeCopy(`TEMP_เอกสารลงนามครบ_${bookingId}`, folder);
     const presentation = SlidesApp.openById(copyFile.getId());
     const formatDateTime = (d) => new Date(d).toLocaleDateString('th-TH', {year:'numeric', month:'long', day:'numeric'}) + ' เวลา ' + new Date(d).toLocaleTimeString('th-TH', {hour:'2-digit', minute:'2-digit'}) + ' น.';
@@ -4596,10 +4687,13 @@ function generateFinalSignedMemoPdf_(approvalId) {
 
     // วางลายเซ็นผู้จองและผู้ลงนามตามตำแหน่ง placeholder ใน Slide Template
     // หากต้องการเลื่อนตำแหน่ง ให้เลื่อนกล่อง placeholder ใน Google Slides ได้โดยตรง
-    if (booking.signatureFileId) {
+    const strictPdf=pronteraFlag_('PRONTERA_STRICT_PDF_SIGNATURES');
+    if (booking.signatureFileId || booking.signatureProfileVersion || strictPdf) {
       try {
-        insertImageAtPlaceholder_(presentation, '{{GUESTSIGNATURE}}', DriveApp.getFileById(booking.signatureFileId).getBlob(), SIGNATURE_IMAGE_WIDTH, SIGNATURE_IMAGE_HEIGHT, { offsetY: 0 });
+        const blob=booking.signatureProfileVersion ? pronteraSnapshotBlob_(booking.signatureFileId,booking.signatureProfileVersion) : DriveApp.getFileById(booking.signatureFileId).getBlob();
+        if(!insertImageAtPlaceholder_(presentation,'{{GUESTSIGNATURE}}',blob,SIGNATURE_IMAGE_WIDTH,SIGNATURE_IMAGE_HEIGHT,{offsetY:0})) throw new Error('ไม่พบตำแหน่งลายเซ็นผู้จอง');
       } catch(e) {
+        if(booking.signatureProfileVersion||strictPdf) throw e;
         console.warn('ไม่สามารถวางลายเซ็นผู้จองได้: ' + e.message);
       }
     }
@@ -4611,12 +4705,12 @@ function generateFinalSignedMemoPdf_(approvalId) {
     ].forEach(pair => {
       const placeholder = pair[0];
       const step = pair[1] || {};
-      if (step.signatureFileId) {
+      const versionRef=String(step.signMethod||'').startsWith('profile:') ? String(step.signMethod).slice(8) : '';
+      if(step.signatureFileId||versionRef||strictPdf){
         try {
-          insertImageAtPlaceholder_(presentation, placeholder, DriveApp.getFileById(step.signatureFileId).getBlob(), SIGNATURE_IMAGE_WIDTH, SIGNATURE_IMAGE_HEIGHT, { offsetY: 0 });
-        } catch(e) {
-          console.warn('ไม่สามารถวางลายเซ็นที่ ' + placeholder + ': ' + e.message);
-        }
+          const blob=versionRef ? pronteraSnapshotBlob_(step.signatureFileId,versionRef) : DriveApp.getFileById(step.signatureFileId).getBlob();
+          if(!insertImageAtPlaceholder_(presentation,placeholder,blob,SIGNATURE_IMAGE_WIDTH,SIGNATURE_IMAGE_HEIGHT,{offsetY:0}))throw new Error('ไม่พบตำแหน่งลายเซ็น '+placeholder);
+        }catch(e){if(versionRef||strictPdf)throw e;console.warn('ไม่สามารถวางลายเซ็นที่ '+placeholder+': '+e.message);}
       }
     });
 
@@ -4631,7 +4725,7 @@ function generateFinalSignedMemoPdf_(approvalId) {
     const pdfName = `บันทึกข้อความลงนามครบถ้วน_${bookingId}.pdf`;
     const pdfBlob = copyFile.getAs(MimeType.PDF).setName(pdfName);
     const pdfFile = folder.createFile(pdfBlob).setName(pdfName);
-    try { pdfFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW); } catch(e) {}
+    try { pronteraShareDocument_(pdfFile); } catch(e) {}
     copyFile.setTrashed(true);
     return { url: pdfFile.getUrl(), fileId: pdfFile.getId(), blob: pdfBlob, name: pdfName };
   } catch (e) {
@@ -4653,15 +4747,15 @@ function finalizeApprovalFlow_(approvalId, actorName, actorEmail) {
   }
 
   const c = flow.cols;
-  flow.sheet.getRange(flow.rowNo, c.overallStatus).setValue('COMPLETED');
   flow.sheet.getRange(flow.rowNo, c.finalSignedPdfUrl).setValue(result.url);
   flow.sheet.getRange(flow.rowNo, c.finalSignedPdfFileId).setValue(result.fileId);
   flow.sheet.getRange(flow.rowNo, c.completedAt).setValue(new Date());
   flow.sheet.getRange(flow.rowNo, c.updatedAt).setValue(new Date());
+  flow.sheet.getRange(flow.rowNo, c.overallStatus).setValue('COMPLETED');
   const bookingId = normalizeText_(getCell_(flow.row, c.bookingId));
-  try { markBookingApproved_(bookingId, 'ลงนามเอกสารครบทุกขั้นแล้ว | Final PDF: ' + result.url); } catch (e) { logAction('System', 'Booking Approved Status Error', `Booking ID: ${bookingId} | ${e.message}`); }
+  try { markBookingApproved_(bookingId, 'ลงนามเอกสารครบทุกขั้นแล้ว | Final PDF: ' + result.url); } catch (e) { pronteraBestEffortLog_('System', 'Booking Approved Status Error', `Booking ID: ${bookingId} | ${e.message}`); if(getBookingStatusById_(bookingId)!==BOOKING_STATUS.APPROVED) throw new Error('สร้าง PDF แล้ว แต่ปรับสถานะ Booking ไม่สำเร็จ กรุณาให้ Admin ซ่อมสถานะ'); }
   logApproval_(approvalId, bookingId, 'GENERATE_FINAL_PDF', actorName || 'System', actorEmail || '', 3, result.url);
-  sendApprovalCompletedEmail_(approvalId, result.url);
+  try { sendApprovalCompletedEmail_(approvalId, result.url); } catch(e) { logAction_('System','Approval Completed Email Error',bookingId+' | '+e.message); result.notificationWarning='สร้างเอกสารสำเร็จ แต่ส่งอีเมลไม่สำเร็จ'; }
   return result;
 }
 
@@ -4683,7 +4777,7 @@ function sendApprovalCompletedEmail_(approvalId, finalPdfUrl) {
     </table>
     <div style="text-align:center; margin:28px 0;"><a href="${escapeHtml_(finalPdfUrl)}" style="background:#198754; color:white; padding:12px 22px; border-radius:8px; text-decoration:none; font-weight:bold;">เปิดไฟล์เอกสารที่ลงนามครบถ้วน</a></div>
   `;
-  MailApp.sendEmail({ to: requesterEmail, subject: `✅ เอกสารลงนามครบถ้วน: ${topic}`, htmlBody: createBaseEmailTemplate('เอกสารลงนามครบถ้วนแล้ว', content, EMAIL_THEME.success), name: 'Meeting Room System' });
+  pronteraSendMail_({ to: requesterEmail, subject: `✅ เอกสารลงนามครบถ้วน: ${topic}`, htmlBody: createBaseEmailTemplate('เอกสารลงนามครบถ้วนแล้ว', content, EMAIL_THEME.success), name: 'Meeting Room System' });
   logApproval_(approvalId, bookingId, 'SEND_COMPLETION_EMAIL', 'System', requesterEmail, 3, finalPdfUrl);
 }
 
@@ -4694,7 +4788,7 @@ function sendApprovalRejectedEmail_(approvalId, reason) {
   if (!isValidEmail_(requesterEmail)) return;
   const topic = normalizeText_(getCell_(flow.row, c.topic));
   const content = `<p>เอกสารขอใช้ห้องประชุมหัวข้อ <strong>${escapeHtml_(topic)}</strong> ไม่ได้รับการอนุมัติหรือถูกส่งกลับแก้ไข</p><p><strong>เหตุผล:</strong> ${escapeHtml_(reason)}</p>`;
-  MailApp.sendEmail({ to: requesterEmail, subject: `⚠️ เอกสารถูกส่งกลับ/ไม่อนุมัติ: ${topic}`, htmlBody: createBaseEmailTemplate('เอกสารถูกส่งกลับ/ไม่อนุมัติ', content, EMAIL_THEME.warning), name: 'Meeting Room System' });
+  pronteraSendMail_({ to: requesterEmail, subject: `⚠️ เอกสารถูกส่งกลับ/ไม่อนุมัติ: ${topic}`, htmlBody: createBaseEmailTemplate('เอกสารถูกส่งกลับ/ไม่อนุมัติ', content, EMAIL_THEME.warning), name: 'Meeting Room System' });
 }
 
 
@@ -5032,7 +5126,7 @@ function sendDailyPendingApprovalDigestEmail_(group, now) {
   if (!group || !group.approverEmail || !Array.isArray(group.items) || group.items.length === 0) return false;
   const subject = `🖊️ สรุปรายการรอลงนามประจำวัน: ${group.items.length} รายการ`;
   const body = buildDailyPendingApprovalDigestEmailBody_(group, now || new Date());
-  MailApp.sendEmail({
+  pronteraSendMail_({
     to: group.approverEmail,
     subject: subject,
     htmlBody: createBaseEmailTemplate('สรุปรายการรอลงนามประจำวัน', body, EMAIL_THEME.primary),
@@ -5058,7 +5152,7 @@ function sendDailyPendingApprovalDigestAdminAlert_(issues) {
   if (!issues || issues.length === 0) return false;
   const recipients = getAdminNotificationRecipients_();
   if (!recipients || !recipients.to) {
-    logAction('System', 'Daily Approval Digest Admin Alert Skipped', 'พบปัญหารายการรอลงนาม ' + issues.length + ' รายการ แต่ไม่พบอีเมล Admin');
+    logAction_('System', 'Daily Approval Digest Admin Alert Skipped', 'พบปัญหารายการรอลงนาม ' + issues.length + ' รายการ แต่ไม่พบอีเมล Admin');
     return false;
   }
   const rows = issues.slice(0, DAILY_APPROVAL_DIGEST_MAX_ADMIN_ISSUE_ROWS).map((issue, index) => `
@@ -5096,17 +5190,18 @@ function sendDailyPendingApprovalDigestAdminAlert_(issues) {
     name: 'Meeting Room System'
   };
   if (recipients.cc) options.cc = recipients.cc;
-  MailApp.sendEmail(options);
-  logAction('System', 'Daily Approval Digest Admin Alert', 'จำนวนรายการที่ต้องตรวจสอบ: ' + issues.length);
+  pronteraSendMail_(options);
+  logAction_('System', 'Daily Approval Digest Admin Alert', 'จำนวนรายการที่ต้องตรวจสอบ: ' + issues.length);
   return true;
 }
 
 // ฟังก์ชันหลักสำหรับ Trigger รายวัน: ส่งอีเมลสรุปรายการรอลงนาม 1 ฉบับต่อผู้ลงนาม 1 คน
-function sendDailyPendingApprovalDigest() {
+function sendDailyPendingApprovalDigest(event) {
+  pronteraGuardTrigger_(event,"sendDailyPendingApprovalDigest");
   ensureDatabaseSchema_();
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(15000)) {
-    logAction('System', 'Daily Approval Digest Skipped', 'ไม่สามารถขอ Lock ได้ อาจมี Trigger หรือผู้ดูแลระบบรันพร้อมกัน');
+    logAction_('System', 'Daily Approval Digest Skipped', 'ไม่สามารถขอ Lock ได้ อาจมี Trigger หรือผู้ดูแลระบบรันพร้อมกัน');
     return { success: false, reason: 'LOCK_UNAVAILABLE', sentEmails: 0, sentItems: 0 };
   }
 
@@ -5130,16 +5225,16 @@ function sendDailyPendingApprovalDigest() {
         });
       } catch (mailError) {
         failedGroups.push({ email: group.approverEmail, message: mailError.message });
-        logAction('System', 'Daily Approval Digest Email Error', group.approverEmail + ' | ' + mailError.message);
+        logAction_('System', 'Daily Approval Digest Email Error', group.approverEmail + ' | ' + mailError.message);
       }
     });
 
     updateDailyApprovalDigestNotificationFlags_(digest.stepSheet, digest.stepCols, sentItemsByStepKey);
     if (digest.issues.length > 0) {
-      try { sendDailyPendingApprovalDigestAdminAlert_(digest.issues); } catch (adminAlertError) { logAction('System', 'Daily Approval Digest Admin Alert Error', adminAlertError.message); }
+      try { sendDailyPendingApprovalDigestAdminAlert_(digest.issues); } catch (adminAlertError) { logAction_('System', 'Daily Approval Digest Admin Alert Error', adminAlertError.message); }
     }
 
-    logAction('System', 'Daily Approval Digest Completed', `ส่งอีเมล ${sentEmails} ฉบับ | รายการ ${sentItems} รายการ | ปัญหาที่ต้องตรวจ ${digest.issues.length} รายการ | ส่งไม่สำเร็จ ${failedGroups.length} กลุ่ม`);
+    logAction_('System', 'Daily Approval Digest Completed', `ส่งอีเมล ${sentEmails} ฉบับ | รายการ ${sentItems} รายการ | ปัญหาที่ต้องตรวจ ${digest.issues.length} รายการ | ส่งไม่สำเร็จ ${failedGroups.length} กลุ่ม`);
     return {
       success: failedGroups.length === 0,
       sentEmails: sentEmails,
@@ -5150,7 +5245,7 @@ function sendDailyPendingApprovalDigest() {
       failedGroups: failedGroups
     };
   } catch (e) {
-    logAction('System', 'Daily Approval Digest Fatal Error', e.message);
+    logAction_('System', 'Daily Approval Digest Fatal Error', e.message);
     throw e;
   } finally {
     try { lock.releaseLock(); } catch (e) {}
@@ -5160,6 +5255,7 @@ function sendDailyPendingApprovalDigest() {
 // ใช้รันทดสอบจาก Apps Script Editor เพื่อดูจำนวนรายการที่จะถูกส่ง โดยไม่ส่งอีเมลจริงและไม่อัปเดต Notify Count
 // หมายเหตุ: Apps Script Editor ไม่แสดง return value ใน Execution log โดยอัตโนมัติ จึงต้องพิมพ์ผลด้วย console.log/Logger.log
 function previewDailyPendingApprovalDigest() {
+  requirePronteraEditor_();
   const digest = getPendingApprovalDigestData_();
   const groups = Object.keys(digest.groups).sort().map(key => ({
     approverEmail: digest.groups[key].approverEmail,
@@ -5224,6 +5320,7 @@ function previewDailyPendingApprovalDigest() {
 
 // ใช้สร้าง Trigger รายวันสำหรับระบบสรุปรายการรอลงนาม หลังตรวจ preview และทดสอบ manual แล้ว
 function createDailyPendingApprovalDigestTrigger() {
+  requirePronteraEditor_();
   deleteDailyPendingApprovalDigestTriggers();
   deleteLegacyPendingApprovalReminderTriggers();
   ScriptApp.newTrigger('sendDailyPendingApprovalDigest')
@@ -5233,11 +5330,12 @@ function createDailyPendingApprovalDigestTrigger() {
     .everyDays(1)
     .inTimezone(DAILY_APPROVAL_DIGEST_TIMEZONE)
     .create();
-  logAction('System', 'Create Daily Approval Digest Trigger', 'ตั้ง Trigger รายวันสำหรับ sendDailyPendingApprovalDigest เรียบร้อย');
+  logAction_('System', 'Create Daily Approval Digest Trigger', 'ตั้ง Trigger รายวันสำหรับ sendDailyPendingApprovalDigest เรียบร้อย');
   return { success: true, functionName: 'sendDailyPendingApprovalDigest', hour: DAILY_APPROVAL_DIGEST_TRIGGER_HOUR, minute: DAILY_APPROVAL_DIGEST_TRIGGER_MINUTE };
 }
 
 function deleteDailyPendingApprovalDigestTriggers() {
+  requirePronteraEditor_();
   const triggers = ScriptApp.getProjectTriggers();
   let deleted = 0;
   triggers.forEach(trigger => {
@@ -5246,12 +5344,13 @@ function deleteDailyPendingApprovalDigestTriggers() {
       deleted++;
     }
   });
-  if (deleted > 0) logAction('System', 'Delete Daily Approval Digest Triggers', 'ลบ Trigger เดิมของ sendDailyPendingApprovalDigest จำนวน ' + deleted + ' รายการ');
+  if (deleted > 0) logAction_('System', 'Delete Daily Approval Digest Triggers', 'ลบ Trigger เดิมของ sendDailyPendingApprovalDigest จำนวน ' + deleted + ' รายการ');
   return { success: true, deleted: deleted };
 }
 
 
 function deleteLegacyPendingApprovalReminderTriggers() {
+  requirePronteraEditor_();
   const triggers = ScriptApp.getProjectTriggers();
   let deleted = 0;
   triggers.forEach(trigger => {
@@ -5260,11 +5359,12 @@ function deleteLegacyPendingApprovalReminderTriggers() {
       deleted++;
     }
   });
-  if (deleted > 0) logAction('System', 'Delete Legacy Pending Approval Reminder Triggers', 'ลบ Trigger เดิมของ sendPendingApprovalReminders จำนวน ' + deleted + ' รายการ เพื่อป้องกันการส่งซ้ำกับ Daily Digest');
+  if (deleted > 0) logAction_('System', 'Delete Legacy Pending Approval Reminder Triggers', 'ลบ Trigger เดิมของ sendPendingApprovalReminders จำนวน ' + deleted + ' รายการ เพื่อป้องกันการส่งซ้ำกับ Daily Digest');
   return { success: true, deleted: deleted };
 }
 
-function sendPendingApprovalReminders() {
+function sendPendingApprovalReminders(event) {
+  pronteraGuardTrigger_(event,"sendPendingApprovalReminders");
   ensureDatabaseSchema_();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const stepSheet = ss.getSheetByName(SHEET_APPROVAL_STEPS);
@@ -5276,7 +5376,7 @@ function sendPendingApprovalReminders() {
     if (normalizeText_(getCell_(row, cols.status)) !== 'PENDING') continue;
     const last = new Date(getCell_(row, cols.lastNotifiedAt));
     if (isNaN(last.getTime()) || now.getTime() - last.getTime() >= 24 * 60 * 60 * 1000) {
-      try { sendApprovalRequestEmail_(normalizeText_(getCell_(row, cols.approvalId)), parseInt(getCell_(row, cols.stepNo), 10)); } catch(e) { logAction('System', 'Approval Reminder Error', e.message); }
+      try { sendApprovalRequestEmail_(normalizeText_(getCell_(row, cols.approvalId)), parseInt(getCell_(row, cols.stepNo), 10)); } catch(e) { logAction_('System', 'Approval Reminder Error', e.message); }
     }
   }
 }
@@ -5288,13 +5388,15 @@ function getApprovalAdminOverview(sessionToken) {
   const flowSheet = ss.getSheetByName(SHEET_APPROVAL_FLOW);
   const cols = getApprovalFlowCols_(flowSheet);
   const rows = flowSheet.getDataRange().getValues().slice(1).filter(row => normalizeText_(getCell_(row, cols.approvalId)));
-  return rows.map(row => {
+  const bookingSheet=ss.getSheetByName(SHEET_BOOKINGS), bCols=getBookingCols_(bookingSheet);
+  const byId=new Map(bookingSheet.getDataRange().getValues().slice(1).map(r=>[normalizeText_(getCell_(r,bCols.id)),buildBookingObjectFromRow_(r,bCols)]));
+  return rows.slice(-50).map(row => {
     const bookingId = normalizeText_(getCell_(row, cols.bookingId));
     let useDate = '-';
     let useTime = '-';
     let bookingStatus = '';
     try {
-      const booking = getBookingRecordObject_(bookingId);
+      const booking = byId.get(bookingId);
       useDate = getBookingUseDateText_(booking);
       useTime = getBookingUseTimeText_(booking);
       bookingStatus = getBookingStatusLabel_(booking.status);
@@ -5315,19 +5417,28 @@ function getApprovalAdminOverview(sessionToken) {
       finalSignedPdfUrl: normalizeText_(getCell_(row, cols.finalSignedPdfUrl)),
       updatedAt: getCell_(row, cols.updatedAt) instanceof Date ? Utilities.formatDate(getCell_(row, cols.updatedAt), Session.getScriptTimeZone() || 'Asia/Bangkok', 'yyyy-MM-dd HH:mm') : normalizeText_(getCell_(row, cols.updatedAt))
     };
-  }).reverse().slice(0, 50);
+  }).reverse();
 }
 
 function resendCurrentApprovalLinkByAdmin(approvalId, sessionToken) {
   const user = requireUser_(sessionToken, ['Admin']);
-  const flow = findApprovalFlowById_(approvalId);
-  const c = flow.cols;
-  const status = normalizeText_(getCell_(flow.row, c.overallStatus));
-  if (!['PENDING_ROOM_OFFICER', 'PENDING_BUILDING_GROUP', 'PENDING_DEPUTY_DIRECTOR'].includes(status)) throw new Error('เอกสารนี้ไม่ได้อยู่ในสถานะรอลงนาม');
-  const stepNo = parseInt(getCell_(flow.row, c.currentStep), 10);
-  sendApprovalRequestEmail_(approvalId, stepNo);
-  logApproval_(approvalId, normalizeText_(getCell_(flow.row, c.bookingId)), 'ADMIN_RESEND_APPROVAL_LINK', formatUserForLog_(user), '', stepNo, 'ส่งลิงก์ลงนามซ้ำจากหน้า Admin');
-  return 'ส่งลิงก์ลงนามซ้ำเรียบร้อยแล้ว';
+  const lock=LockService.getScriptLock();
+  if(!lock.tryLock(10000))throw new Error('ระบบกำลังดำเนินการ กรุณาลองใหม่');
+  try {
+    const flow = findApprovalFlowById_(approvalId), c=flow.cols;
+    const status=normalizeText_(getCell_(flow.row,c.overallStatus));
+    if(!isApprovalFlowPendingStatus_(status))throw new Error('เอกสารนี้ไม่ได้อยู่ในสถานะรอลงนาม');
+    const bookingId=normalizeText_(getCell_(flow.row,c.bookingId));
+    assertBookingCanBeApproved_(bookingId);
+    const stepNo=Number(getCell_(flow.row,c.currentStep));
+    assertApprovalStepSequence_(approvalId,stepNo);
+    const step=getApprovalStepRecordsForApproval_(approvalId).find(x=>x.stepNo===stepNo);
+    const expiry=new Date(getCell_(step.row,step.cols.tokenExpireAt));
+    if(!normalizeText_(getCell_(step.row,step.cols.token))||!Number.isFinite(expiry.getTime())||expiry<=new Date())activateApprovalStepWithFreshToken_(step,new Date());
+    sendApprovalRequestEmail_(approvalId,stepNo);
+    logApproval_(approvalId,bookingId,'ADMIN_RESEND_APPROVAL_LINK',formatUserForLog_(user),'',stepNo,'ส่งลิงก์ลงนามซ้ำจากหน้า Admin');
+    return 'ส่งลิงก์ลงนามซ้ำเรียบร้อยแล้ว';
+  } finally {lock.releaseLock();}
 }
 
 function adminCreateApprovalFlowForBooking(bookingId, sessionToken) {
@@ -5349,6 +5460,7 @@ function adminCreateApprovalFlowForBooking(bookingId, sessionToken) {
 }
 
 function testAuth() {
+  requirePronteraEditor_();
   SlidesApp.create("Test Permission");
 }
 
@@ -5357,6 +5469,7 @@ function testAuth() {
  * Creates/repairs Approval sheets and default Approvers rows.
  */
 function setupApprovalSystem() {
+  requirePronteraEditor_();
   ensureDatabaseSchema_();
   return "สร้าง/ตรวจสอบชีทระบบ Approval และคอลัมน์ที่จำเป็นเรียบร้อยแล้ว";
 }

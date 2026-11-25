@@ -1,3 +1,18 @@
+# R1.1 — Production risk audit (25 November 2026)
+
+- Require matching Workspace identity before saved-signature receipt recovery.
+- Invalidate prior approval workflows before an edit writes booking data; mark Approval Error on interrupted edit. Protect current step and reject duplicate tokens; check generated approval IDs for collisions.
+- Preserve committed booking on notification/log failures; return explicit warnings and preserve workflow recovery; support multiple configured approver emails.
+- Require final PDF evidence for status repair and avoid reporting completed approval when booking update fails.
+- Reject invalid/ambiguous legacy credentials; sanitize log/reason spreadsheet text; lock evaluation submission and align survey windows.
+- Serialize admin resend and renew expired tokens. Match metadata headers case-insensitively.
+- Add read-only `pronteraProductionPreflight()`; expand mocked regression suite from 42 to 85 checks and instrument 238 server function entries.
+- Keep manifest, UI source, trigger handler names and existing production resource defaults unchanged from R1.
+
+See `AUDIT_R1_1.md`, `DIRECT_PRODUCTION.md`, `TEST_REPORT.txt`. No production runtime test or deployment was performed.
+
+---
+
 # Changelog
 
 ## Current Documented Version
@@ -44,3 +59,12 @@
 - dashboard
 - แบบประเมิน
 - approval workflow 3 ขั้น
+
+## Next Generation R1 — 2026-11-25
+
+- Added SignatureService.gs, PronteraServices.gs, PronteraOperations.gs, SignatureComponents.html.
+- Saved-signature profiles and private version snapshots, verified Workspace use, optional strict flags; first-use and change UI on booking and approval pages.
+- Booking conflict exclusion fix, durable submission receipt, shared cancellation/repair lock, session expiry and role verification, private helper RPCs, limited calendar fields, strict snapshot integrity for final PDF.
+- Workspace login, scoped My Bookings/Approval Inbox, availability finder, mobile agenda, preparation queue, health summary, range payload and approval overview batch join.
+- Test mode and documented config overrides, 42 offline checks. No production runtime tests or deployment.
+- R1 is a bounded controlled-release candidate. Background job queue and other remaining roadmap items documented in README.

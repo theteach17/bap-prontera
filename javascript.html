@@ -6,6 +6,11 @@
   var currentSheetData = {}; 
   var isBookingFlowBusy = false;
   var isSubmittingBooking = false;
+  var pronteraSubmissionId = '', pronteraSubmissionPayload = '';
+  function newPronteraSubmissionId() {
+    const bytes=new Uint8Array(16); window.crypto.getRandomValues(bytes);
+    return Array.from(bytes,n=>n.toString(16).padStart(2,'0')).join('');
+  }
 
   function setBookingFlowBusy(isBusy) {
     isBookingFlowBusy = !!isBusy;
@@ -131,11 +136,11 @@
   function initCalendar() {
     var calendarEl = document.getElementById('calendar');
     calendar = new FullCalendar.Calendar(calendarEl, {
-      initialView: 'dayGridMonth',
+      initialView: window.innerWidth < 576 ? 'listWeek' : 'dayGridMonth',
       headerToolbar: {
         left: 'prev,next today',
         center: 'title',
-        right: 'dayGridMonth,timeGridWeek,timeGridDay'
+        right: 'dayGridMonth,timeGridWeek,timeGridDay,listWeek'
       },
       locale: 'th',
       selectable: true,
@@ -151,7 +156,7 @@
             evt.textColor = '#ffffff';
           });
           successCallback(events);
-        }).getBookingsData();
+        }).withFailureHandler(err=>{failureCallback(err);handleServerError(err,"โหลดปฏิทินไม่สำเร็จ");}).getBookingsData(info.startStr,info.endStr,getSessionToken());
       },
       
       dateClick: function(info) {
@@ -305,6 +310,7 @@ function openBookingModal(dateStr) {
       showBusyWarning();
       return;
     }
+    pronteraSubmissionId=''; pronteraSubmissionPayload='';
     document.getElementById('bookingForm').reset();
     document.getElementById('bookingId').value = '';
     document.getElementById('isEdit').value = 'false';
@@ -625,7 +631,24 @@ async function handleFormSubmit(e) {
       .getSimilarBookingWarningForForm(duplicatePayload);
   }
 
-  function showSignatureDialogAndSubmit(base64File = '', fileName = '') {
+  async function showSignatureDialogAndSubmit(base64File = '', fileName = '') {
+    try {
+      const profile=await pronteraRpc('getPronteraSignatureProfile');
+      const requester=document.getElementById('requesterEmail').value.trim().toLowerCase();
+      if(profile.enabled && profile.available && profile.email===requester) {
+        const chosen=await pronteraChooseSignature(profile);
+        if(chosen) submitToServer(base64File,fileName,'',chosen);
+        else resetBookingFlowState();
+        return;
+      }
+      if(profile.enabled) {
+        const decision=await Swal.fire({title:'ใช้ลายเซ็นครั้งเดียว',text:'บัญชี Google Workspace ไม่ตรงกับอีเมลผู้จองหรือไม่สามารถยืนยันตัวตนได้ จึงไม่สามารถใช้ลายเซ็นที่บันทึกไว้',icon:'warning',showCancelButton:true,confirmButtonText:'วาดลายเซ็นครั้งเดียว',cancelButtonText:'กลับไปตรวจสอบ'});
+        if(!decision.isConfirmed){resetBookingFlowState();return;}
+      }
+      showLegacySignatureDialog(base64File,fileName);
+    } catch(error){resetBookingFlowState();handleServerError(error);}
+  }
+  function showLegacySignatureDialog(base64File = '', fileName = '') {
     Swal.fire({
         title: 'กรุณาลงลายมือชื่อผู้จอง',
         html: `
@@ -647,9 +670,9 @@ async function handleFormSubmit(e) {
 
             function getPos(e) {
                 const rect = canvas.getBoundingClientRect();
-                const clientX = e.clientX || (e.touches && e.touches[0].clientX);
-                const clientY = e.clientY || (e.touches && e.touches[0].clientY);
-                return { x: clientX - rect.left, y: clientY - rect.top };
+                const clientX = e.clientX ?? (e.touches && e.touches[0].clientX);
+                const clientY = e.clientY ?? (e.touches && e.touches[0].clientY);
+                return { x: (clientX - rect.left)*canvas.width/rect.width, y: (clientY - rect.top)*canvas.height/rect.height };
             }
 
             function startPosition(e) {
@@ -705,7 +728,7 @@ async function handleFormSubmit(e) {
     });
   }
 
-  function submitToServer(base64File = '', fileName = '', signatureBase64 = '') {
+  function submitToServer(base64File = '', fileName = '', signatureBase64 = '', profile = null) {
     if (isSubmittingBooking) {
       showBusyWarning();
       return;
@@ -744,8 +767,16 @@ async function handleFormSubmit(e) {
       setupDetails: document.getElementById('setupDetails').value,
       setupFileBase64: base64File,
       setupFileName: fileName,
-      signatureBase64: signatureBase64
+      signatureBase64: signatureBase64,
+      useSavedSignature: !!profile,
+      signatureConfirmed: !!profile,
+      signatureProfileId: profile ? profile.signatureId : ''
     };
+    if(!formData.isEdit && window.crypto && window.crypto.getRandomValues){
+      const payload=JSON.stringify(Object.assign({},formData,{signatureBase64:''}));
+      if(!pronteraSubmissionId || payload!==pronteraSubmissionPayload){pronteraSubmissionId=newPronteraSubmissionId();pronteraSubmissionPayload=payload;}
+      formData.submissionId=pronteraSubmissionId;
+    }
 
     google.script.run
       .withSuccessHandler(function(response) {
@@ -758,6 +789,7 @@ async function handleFormSubmit(e) {
         let successHtml = `
           <div class="text-start">
             <div class="mb-2">ระบบได้รับคำขอจองห้องประชุมแล้ว</div>
+            <div class="mb-2"><b>เลขที่คำขอ:</b> ${escapeHtml(response && response.bookingId || "-")}</div>
             <div class="mb-2">เอกสารจะถูกส่งต่อเพื่อลงนามโดยอัตโนมัติ<br>ผู้จองไม่ต้องพิมพ์หรือเสนอเอกสารด้วยตนเอง</div>
             <div>เมื่ออนุมัติครบถ้วน ระบบจะส่งลิงก์ไฟล์ฉบับสมบูรณ์ไปยังอีเมลของผู้จอง</div>
           </div>
@@ -910,6 +942,7 @@ async function handleFormSubmit(e) {
   }
 
   function updateUIState() {
+    if(calendar) calendar.refetchEvents();
       const dashboardLi = document.getElementById('dashboardMenuLi');
       const dashboardCard = document.getElementById('dashboardCard');
 
@@ -1446,7 +1479,7 @@ async function handleFormSubmit(e) {
                 if (calendar) calendar.refetchEvents();
             })
             .withFailureHandler((err) => Swal.fire('เกิดข้อผิดพลาด', err.message, 'error'))
-            .repairBookingApprovalStatusConsistency();
+            .repairBookingApprovalStatusConsistency(getSessionToken());
       });
   }
 

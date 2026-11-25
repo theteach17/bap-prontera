@@ -66,8 +66,11 @@
             <div class="col-md-6 mb-3"><label class="form-label fw-bold">อีเมลผู้ลงนาม</label><input type="email" id="signerEmail" class="form-control" required></div>
           </div>
           <div class="mb-3"><label class="form-label fw-bold">ความเห็น/หมายเหตุ</label><textarea id="comment" class="form-control" rows="2" placeholder="ระบุความเห็นเพิ่มเติม หากมี"></textarea></div>
+          <div id="pronteraProfileArea" class="alert alert-info" hidden><div id="pronteraProfileStatus"></div><button type="button" class="btn btn-sm btn-outline-primary mt-2" onclick="pronteraApprovalProfile()">ตั้งค่า / เปลี่ยนลายเซ็น</button></div>
+          <div id="pronteraManualArea">
           <div class="card border-info mb-3"><div class="card-header bg-info bg-opacity-10 fw-bold"><i class="bi bi-vector-pen"></i> ลงลายมือชื่อออนไลน์</div><div class="card-body"><canvas id="sigCanvas" width="700" height="190"></canvas><div class="d-flex gap-2 mt-2"><button type="button" class="btn btn-outline-danger btn-sm" onclick="clearSignature()"><i class="bi bi-eraser"></i> ล้างลายเซ็น</button></div></div></div>
           <div class="mb-4"><label class="form-label fw-bold">หรือแนบรูปลายเซ็น PNG/JPG</label><input type="file" id="signatureFile" class="form-control" accept="image/png,image/jpeg" onchange="previewSignatureFile()"><div class="form-text">หากแนบรูป ระบบจะใช้รูปนี้แทนลายเซ็นที่วาดบนหน้าจอ ขนาดไม่เกิน 1MB</div><div id="signatureFilePreview" class="mt-2"></div></div>
+          </div>
           <div class="d-grid gap-2 d-md-flex justify-content-md-end">
             <button type="button" class="btn btn-outline-danger" onclick="rejectApproval()"><i class="bi bi-x-circle"></i> ไม่อนุมัติ/ส่งกลับแก้ไข</button>
             <button type="submit" id="btnApprove" class="btn btn-success btn-lg"><i class="bi bi-check-circle"></i> อนุมัติและลงนาม</button>
@@ -77,9 +80,15 @@
     </div>
   </div>
   <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+  <?!= include('SignatureComponents'); ?>
   <script>
     const approvalToken = "<?= token ?>";
     let fileSignatureBase64 = '';
+    let pronteraApprovalSaved = null;
+    let pronteraApprovalEmails = '';
+    let pronteraApprovalProfileEnabled = false;
+    let pronteraApprovalProfileLoading = true;
+    let pronteraCurrentApprovalProfile = null;
     let isDrawing = false;
     document.addEventListener('DOMContentLoaded', () => { initCanvas(); loadApprovalDetails(); });
     function escapeHtml(v){return String(v??'').replace(/[&<>'"]/g,s=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[s]));}
@@ -132,6 +141,8 @@
           document.getElementById('endStr').innerText=d.endStr||'-';
           document.getElementById('signerName').value=d.approverName||'';
           document.getElementById('signerEmail').value=(d.approverEmail||'').split(',')[0]||'';
+          pronteraApprovalEmails=d.approverEmail||'';
+          pronteraLoadApprovalProfile();
           const memoLink=document.getElementById('memoLink');
           if(d.initialMemoPdfUrl){memoLink.href=d.initialMemoPdfUrl;memoLink.style.display='inline-block';}
           else{memoLink.removeAttribute('href');memoLink.style.display='none';}
@@ -168,12 +179,33 @@
       if(errorText) errorText.innerText=msg||'เกิดข้อผิดพลาด';
       if(errorBox) errorBox.style.display='block';
     }
-    function initCanvas(){const c=document.getElementById('sigCanvas');const ctx=c.getContext('2d');function pos(e){const r=c.getBoundingClientRect();const x=(e.clientX||(e.touches&&e.touches[0].clientX))-r.left;const y=(e.clientY||(e.touches&&e.touches[0].clientY))-r.top;return {x:x*c.width/r.width,y:y*c.height/r.height};}function start(e){isDrawing=true;const p=pos(e);ctx.beginPath();ctx.moveTo(p.x,p.y);e.preventDefault();}function draw(e){if(!isDrawing)return;const p=pos(e);ctx.lineWidth=3;ctx.lineCap='round';ctx.strokeStyle='#0b2e59';ctx.lineTo(p.x,p.y);ctx.stroke();e.preventDefault();}function end(){isDrawing=false;}c.addEventListener('mousedown',start);c.addEventListener('mousemove',draw);c.addEventListener('mouseup',end);c.addEventListener('mouseleave',end);c.addEventListener('touchstart',start,{passive:false});c.addEventListener('touchmove',draw,{passive:false});c.addEventListener('touchend',end);} 
+    function initCanvas(){const c=document.getElementById('sigCanvas');const ctx=c.getContext('2d');function pos(e){const r=c.getBoundingClientRect();const x=(e.clientX??(e.touches&&e.touches[0].clientX))-r.left;const y=(e.clientY??(e.touches&&e.touches[0].clientY))-r.top;return {x:x*c.width/r.width,y:y*c.height/r.height};}function start(e){isDrawing=true;const p=pos(e);ctx.beginPath();ctx.moveTo(p.x,p.y);e.preventDefault();}function draw(e){if(!isDrawing)return;const p=pos(e);ctx.lineWidth=3;ctx.lineCap='round';ctx.strokeStyle='#0b2e59';ctx.lineTo(p.x,p.y);ctx.stroke();e.preventDefault();}function end(){isDrawing=false;}c.addEventListener('mousedown',start);c.addEventListener('mousemove',draw);c.addEventListener('mouseup',end);c.addEventListener('mouseleave',end);c.addEventListener('touchstart',start,{passive:false});c.addEventListener('touchmove',draw,{passive:false});c.addEventListener('touchend',end);} 
+    async function pronteraLoadApprovalProfile(){
+      pronteraApprovalProfileLoading=true;
+      document.getElementById("btnApprove").disabled=true;
+      pronteraApprovalSaved=null;
+      document.getElementById("pronteraManualArea").hidden=false;
+      try{
+        const p=await pronteraRpc('getPronteraSignatureProfile');
+        pronteraCurrentApprovalProfile=p;
+        const allowed=pronteraApprovalEmails.toLowerCase().split(/[;,\s]+/).includes(p.email);
+        pronteraApprovalProfileEnabled=!!(p.enabled&&p.available&&allowed);
+        const area=document.getElementById('pronteraProfileArea');
+        area.hidden=!pronteraApprovalProfileEnabled;
+        if(!pronteraApprovalProfileEnabled)return;
+        pronteraApprovalSaved=p.hasSignature?p:null;
+        document.getElementById('signerEmail').value=p.email;
+        document.getElementById('signerEmail').readOnly=true;
+        document.getElementById('pronteraManualArea').hidden=!!pronteraApprovalSaved;
+        document.getElementById('pronteraProfileStatus').textContent=p.hasSignature?'ลายเซ็นส่วนบุคคลพร้อมใช้งาน · เวอร์ชัน '+p.version:'ยังไม่มีลายเซ็นส่วนบุคคล กรุณาตั้งค่าเพื่อใช้ครั้งถัดไป';
+      }catch(e){document.getElementById('pronteraProfileArea').hidden=false;document.getElementById('pronteraProfileStatus').textContent='ตรวจสอบโปรไฟล์ลายเซ็นไม่สำเร็จ กรุณาโหลดใหม่';pronteraCurrentApprovalProfile=null;}finally{pronteraApprovalProfileLoading=false;document.getElementById('btnApprove').disabled=false;}
+    }
+    async function pronteraApprovalProfile(){await pronteraOpenProfile();await pronteraLoadApprovalProfile();}
     function clearSignature(){const c=document.getElementById('sigCanvas');c.getContext('2d').clearRect(0,0,c.width,c.height);fileSignatureBase64='';document.getElementById('signatureFile').value='';document.getElementById('signatureFilePreview').innerHTML='';}
     function canvasIsBlank(){const c=document.getElementById('sigCanvas');const blank=document.createElement('canvas');blank.width=c.width;blank.height=c.height;return c.toDataURL()===blank.toDataURL();}
     function previewSignatureFile(){const f=document.getElementById('signatureFile').files[0]; if(!f)return; if(f.size>1024*1024){Swal.fire('ไฟล์ใหญ่เกินไป','กรุณาใช้ไฟล์ไม่เกิน 1MB','error');document.getElementById('signatureFile').value='';return;} const r=new FileReader();r.onload=()=>{fileSignatureBase64=r.result;document.getElementById('signatureFilePreview').innerHTML=`<img src="${fileSignatureBase64}" class="signature-preview">`;};r.readAsDataURL(f);}
     function buildPayload(action){let sig=fileSignatureBase64;let method=fileSignatureBase64?'upload':'draw'; if(!sig){if(canvasIsBlank()) sig=''; else sig=document.getElementById('sigCanvas').toDataURL('image/png');} return {token:approvalToken,action:action,signerName:document.getElementById('signerName').value,signerEmail:document.getElementById('signerEmail').value,comment:document.getElementById('comment').value,signatureBase64:sig,signatureMethod:method,signatureFileName:(document.getElementById('signatureFile').files[0]||{}).name||'signature.png'};}
-    function submitApproval(e){e.preventDefault();const payload=buildPayload('approve'); if(!payload.signatureBase64){Swal.fire('ยังไม่มีลายเซ็น','กรุณาลงลายเซ็นหรือแนบรูปลายเซ็นก่อนอนุมัติ','warning');return;} Swal.fire({title:'ยืนยันการอนุมัติและลงนาม?',icon:'question',showCancelButton:true,confirmButtonText:'ยืนยัน'}).then(res=>{if(!res.isConfirmed)return;const btn=document.getElementById('btnApprove');btn.disabled=true;Swal.fire({title:'กำลังบันทึก...',allowOutsideClick:false,didOpen:()=>Swal.showLoading()});google.script.run.withSuccessHandler(r=>{Swal.fire('สำเร็จ',r.message||'บันทึกเรียบร้อย','success').then(()=>location.reload());}).withFailureHandler(err=>{btn.disabled=false;Swal.fire('เกิดข้อผิดพลาด',err.message,'error');}).submitApprovalSignature(payload);});}
+    async function submitApproval(e){e.preventDefault();if(pronteraApprovalProfileLoading)return;if(pronteraApprovalProfileEnabled&&!pronteraApprovalSaved&&pronteraCurrentApprovalProfile){try{const saved=await pronteraSignatureEditor(pronteraCurrentApprovalProfile);if(!saved)return;pronteraApprovalSaved=saved;await pronteraLoadApprovalProfile();if(!pronteraApprovalSaved)return;}catch(err){pronteraError(err);return;}}const payload=buildPayload('approve'); if(pronteraApprovalSaved){payload.useSavedSignature=true;payload.signatureConfirmed=true;payload.signatureProfileId=pronteraApprovalSaved.signatureId;payload.signatureBase64='';} if(!payload.useSavedSignature&&!payload.signatureBase64){Swal.fire('ยังไม่มีลายเซ็น','กรุณาลงลายเซ็นหรือแนบรูปลายเซ็นก่อนอนุมัติ','warning');return;} Swal.fire({title:'ยืนยันการอนุมัติและลงนาม?',text:payload.useSavedSignature?'ระบบจะประทับลายเซ็นส่วนบุคคลเวอร์ชัน '+pronteraApprovalSaved.version+' ลงในเอกสาร':'ระบบจะใช้ลายเซ็นที่วาดหรือแนบในครั้งนี้',icon:'question',showCancelButton:true,confirmButtonText:'ยืนยัน'}).then(res=>{if(!res.isConfirmed)return;const btn=document.getElementById('btnApprove');btn.disabled=true;Swal.fire({title:'กำลังบันทึก...',allowOutsideClick:false,didOpen:()=>Swal.showLoading()});google.script.run.withSuccessHandler(r=>{Swal.fire('สำเร็จ',r.message||'บันทึกเรียบร้อย','success').then(()=>location.reload());}).withFailureHandler(err=>{btn.disabled=false;Swal.fire('เกิดข้อผิดพลาด',err.message,'error');}).submitApprovalSignature(payload);});}
     function rejectApproval(){const payload=buildPayload('reject'); if(!payload.comment){Swal.fire('กรุณาระบุเหตุผล','การไม่อนุมัติหรือส่งกลับแก้ไขต้องมีเหตุผล','warning');return;} Swal.fire({title:'ยืนยันไม่อนุมัติ/ส่งกลับแก้ไข?',icon:'warning',showCancelButton:true,confirmButtonText:'ยืนยัน'}).then(res=>{if(!res.isConfirmed)return;google.script.run.withSuccessHandler(r=>Swal.fire('บันทึกแล้ว',r.message,'success').then(()=>location.reload())).withFailureHandler(err=>Swal.fire('เกิดข้อผิดพลาด',err.message,'error')).submitApprovalSignature(payload);});}
   </script>
 </body>

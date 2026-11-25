@@ -9,8 +9,8 @@
     <script src='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.8/index.global.min.js'></script>
     
     <?!= include('stylesheet'); ?>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
-    <link rel="stylesheet" type="text/css" href="https://npmcdn.com/flatpickr/dist/themes/airbnb.css">
+
+
   </head>
   <body>
     
@@ -28,13 +28,12 @@
         <button class="pn-nav-item" type="button" data-view="profile" onclick="pnShowView('profile')"><i class="bi bi-person-vcard"></i> โปรไฟล์และลายเซ็น</button>
         <div id="dashboardMenuLi" style="display:none"><div class="pn-nav-label mt-4">OPERATIONS</div><button class="pn-nav-item" type="button" data-view="dashboard" onclick="pnShowView('dashboard')"><i class="bi bi-bar-chart-line"></i> ภาพรวมการบริหาร</button><button class="pn-nav-item" type="button" onclick="pronteraOpenOperations();pnCloseMenu()"><i class="bi bi-clipboard-check"></i> คิวจัดเตรียมห้อง</button><button class="pn-nav-item" type="button" onclick="pronteraOpenHealth();pnCloseMenu()"><i class="bi bi-heart-pulse"></i> สุขภาพระบบ</button><button class="pn-nav-item" type="button" onclick="pnOpenWorkerHealth();pnCloseMenu()"><i class="bi bi-hourglass-split"></i> สถานะ Worker</button></div>
         <div id="adminMenuLi" style="display:none"><button type="button" class="pn-nav-item" onclick="openAdminPanel();pnCloseMenu()"><i class="bi bi-sliders"></i> ศูนย์ควบคุมระบบ</button><button type="button" class="pn-nav-item" onclick="pnOpenMaintenance();pnCloseMenu()"><i class="bi bi-tools"></i> ปิดห้องซ่อมบำรุง</button></div>
-        <div class="pn-nav-footer">PRONTERA · EXPERIENCE R2<br><small>Google Workspace</small></div>
+        <div class="pn-nav-footer">PRONTERA · EXPERIENCE R2.1<br><small>Google Workspace</small></div>
       </aside>
       <main class="pn-main" id="pnMain" tabindex="-1">
         <section id="pnView-calendar" class="pn-view">
-          <div class="pn-hero"><div><div class="pn-eyebrow">MEETING ROOM WORKSPACE</div><h1>จองห้องประชุม<br>ได้อย่างมั่นใจ</h1><p>ตรวจสอบห้องว่าง วางแผนการประชุม และติดตามคำขอในที่เดียว</p><button type="button" class="btn btn-primary" onclick="openBookingModal()"><i class="bi bi-plus-lg"></i> สร้างคำขอจอง</button></div><div class="pn-hero-aside"><i class="bi bi-calendar2-week"></i><span>ห้องประชุมพร้อมให้คุณวางแผน</span><strong id="pnRoomCount">—</strong><small>ห้องที่เปิดให้บริการ</small></div></div>
-          <div class="pn-quick"><button type="button" onclick="openBookingModal()"><i class="bi bi-search"></i><span><b>ค้นหาห้องว่าง</b><small>ระบุช่วงเวลาและจำนวนคน</small></span><i class="bi bi-chevron-right"></i></button><button type="button" onclick="pnShowView('bookings')"><i class="bi bi-clock-history"></i><span><b>ติดตามคำขอ</b><small>ตรวจสอบสถานะการลงนาม</small></span><i class="bi bi-chevron-right"></i></button><button type="button" onclick="pnShowView('inbox')"><i class="bi bi-check2-square"></i><span><b>เอกสารรอพิจารณา</b><small>สำหรับผู้มีสิทธิ์ลงนาม</small></span><i class="bi bi-chevron-right"></i></button></div>
-          <div class="pn-workgrid"><section class="pn-panel"><div class="pn-panel-head"><div><div class="pn-eyebrow">SCHEDULE</div><h2>ปฏิทินห้องประชุม</h2></div><label class="pn-filter-label" for="pnRoomFilter">กรองห้อง<select class="form-select form-select-sm" id="pnRoomFilter"><option value="">ทุกห้อง</option></select></label></div><div class="pn-legend"><span><i class="pn-dot approved"></i> อนุมัติแล้ว (สีตามห้อง)</span><span><i class="pn-dot pending"></i> รออนุมัติ</span><span><i class="pn-dot error"></i> ต้องตรวจสอบ</span></div><div id="calendar" aria-label="ปฏิทินการจอง"></div></section>
+          <div class="pn-calendar-head"><div><div class="pn-eyebrow">PRONTERA / ตารางการใช้งาน</div><h1>ปฏิทินห้องประชุม</h1><p>เลือกวันที่บนปฏิทิน หรือสร้างคำขอใหม่ · <span id="pnRoomCount">—</span> ห้องเปิดให้บริการ</p></div><button type="button" class="btn btn-primary pn-main-action" onclick="openBookingModal()"><i class="bi bi-plus-lg"></i> จองห้องประชุม</button></div>
+          <div class="pn-workgrid"><section class="pn-panel"><div class="pn-panel-head"><div><h2>ตารางการจอง</h2></div><label class="pn-filter-label" for="pnRoomFilter">กรองห้อง<select class="form-select form-select-sm" id="pnRoomFilter"><option value="">ทุกห้อง</option></select></label></div><div class="pn-legend"><span><i class="pn-dot approved"></i> อนุมัติแล้ว (สีตามห้อง)</span><span><i class="pn-dot pending"></i> รออนุมัติ</span><span><i class="pn-dot error"></i> ต้องตรวจสอบ</span></div><div id="pnCalendarNotice" role="status" class="pn-calendar-notice" hidden></div><div id="calendar" aria-label="ปฏิทินการจอง"><p class="p-3 text-muted">กำลังโหลดปฏิทิน...</p></div></section>
           <section class="pn-panel pn-rooms"><div class="pn-panel-head"><div><div class="pn-eyebrow">SPACES</div><h2>ห้องประชุม</h2></div></div><div id="roomListContainer" class="list-group list-group-flush"><div class="pn-empty" role="status">กำลังโหลดข้อมูลห้อง...</div></div></section></div>
         </section>
         <section id="pnView-bookings" class="pn-view" hidden><div class="pn-page-head"><div class="pn-eyebrow">MY REQUESTS</div><h1>คำขอของฉัน</h1><p>รายการที่ผูกกับบัญชี Google Workspace ของคุณ</p></div><button type="button" class="btn btn-outline-primary mb-3" onclick="pnLoadPersonal('bookings')"><i class="bi bi-arrow-clockwise"></i> โหลดล่าสุด</button><div id="pnBookings" class="pn-personal-grid" aria-live="polite"></div></section>
@@ -46,7 +45,7 @@
     </div>
 
     <div class="modal fade" id="bookingModal" tabindex="-1" aria-hidden="true">
-      <div class="modal-dialog modal-lg"> <div class="modal-content">
+      <div class="modal-dialog modal-lg modal-dialog-scrollable"> <div class="modal-content">
           <div class="modal-header bg-primary text-white">
             <h5 class="modal-title" id="bookingModalTitle"><i class="bi bi-pencil-square"></i> แบบฟอร์มจองห้องประชุม</h5>
             <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
@@ -56,68 +55,29 @@
               <input type="hidden" id="bookingId" name="bookingId">
               <input type="hidden" id="isEdit" name="isEdit" value="false">
 
-              <div class="pn-steps" aria-label="ขั้นตอนการจอง"><span data-step="0">01 · วันเวลาและห้อง</span><span data-step="1">02 · รายละเอียด</span><span data-step="2">03 · ตรวจสอบ</span></div>
-              <div class="pn-book-step" data-book-step="0"><h6 class="pn-section-title">เลือกช่วงเวลาและห้องที่เหมาะสม</h6>              <div class="row bg-light p-3 rounded mb-4 mx-0 border shadow-sm">
-                <div class="col-md-6 mb-3 mb-md-0">
-                  <label class="form-label fw-bold text-success"><i class="bi bi-play-circle"></i> เวลาเริ่มการประชุม</label>
-                  <input type="text" class="form-control form-control-lg bg-white cursor-pointer" id="startTime" name="startTime" required placeholder="คลิกเพื่อเลือกวันและเวลา">
-                </div>
-                <div class="col-md-6">
-                  <label class="form-label fw-bold text-danger"><i class="bi bi-stop-circle"></i> เวลาสิ้นสุดการประชุม</label>
-                  <input type="text" class="form-control form-control-lg bg-white cursor-pointer" id="endTime" name="endTime" required placeholder="คลิกเพื่อเลือกวันและเวลา">
-                </div>
-              </div>
-
-              <div class="row">
-                 <div class="col-md-8 mb-3">
-                  <label class="form-label fw-bold" for="roomId">เลือกห้องประชุม</label> <button type="button" class="btn btn-sm btn-outline-primary" onclick="pronteraFindRooms()">ค้นหาห้องว่าง</button>
-                  <select class="form-select" id="roomId" name="roomId" required onchange="updateRoomName()">
-                    <option value="" selected disabled>-- กรุณาเลือกห้อง --</option>
-                    </select>
-                  <input type="hidden" id="roomName" name="roomName">
-                </div>
-                <div class="col-md-4 mb-3">
-                  <label class="form-label fw-bold">จำนวนผู้เข้าประชุม</label>
-                  <input type="number" class="form-control" id="headcount" name="headcount" min="1" required oninput="validateCapacityClient()">
-                </div>
-              </div>
-
-</div>
-              <div class="pn-book-step" data-book-step="1" hidden><h6 class="pn-section-title">รายละเอียดการประชุม</h6>              <div class="mb-3">
-                <label class="form-label fw-bold">หัวข้อการประชุม</label>
-                <input type="text" class="form-control" id="topic" name="topic" required placeholder="เช่น ประชุมวางแผนประจำเดือน">
-              </div>
-
-              <div class="row">
-                <div class="col-md-6 mb-3">
-                  <label class="form-label fw-bold">ชื่อผู้จอง</label>
-                  <input type="text" class="form-control" id="requester" name="requester" required>
-                </div>
-                <div class="col-md-6 mb-3">
-                  <label class="form-label fw-bold">อีเมลผู้จอง <small class="text-muted">(สำหรับรับแจ้งเตือน)</small></label>
-                  <input type="email" class="form-control" id="requesterEmail" name="requesterEmail" placeholder="name@example.com">
-                </div>
-              </div>
-
-              <div id="setupSection" class="row bg-warning bg-opacity-10 p-3 rounded mb-3 mx-0 border border-warning shadow-sm" style="display: none;">
-                <h6 class="fw-bold text-warning-emphasis mb-3"><i class="bi bi-tools"></i> รูปแบบการจัดโต๊ะและอุปกรณ์เพิ่มเติม (บังคับสำหรับห้องนี้)</h6>
-                <div class="col-md-12 mb-3">
-                  <label class="form-label fw-bold">แนบไฟล์ภาพหรือ PDF (ขนาดไม่เกิน 2MB)</label>
-                  <input type="file" class="form-control" id="setupFile" name="setupFile" accept="image/*,.pdf">
-                </div>
-                <div class="col-md-12">
-                  <label class="form-label fw-bold">รายละเอียดเพิ่มเติม</label>
-                  <textarea class="form-control" id="setupDetails" name="setupDetails" rows="2" placeholder="เช่น จัดโต๊ะรูปแบบตัว U จำนวน 20 ที่นั่ง, รบกวนเพิ่มเก้าอี้เสริม 5 ตัว..."></textarea>
-                </div>
-              </div>
-
-</div>
-              <div class="pn-book-step" data-book-step="2" hidden><h6 class="pn-section-title">ตรวจสอบข้อมูลก่อนดำเนินการลงนาม</h6><div id="pnBookingSummary" class="pn-summary"></div><p class="small text-muted mt-3">ระบบจะตรวจสอบความว่างอีกครั้งก่อนบันทึก และให้คุณยืนยันการลงนามตามขั้นตอนเดิม</p></div>
-              <div class="d-flex gap-2 justify-content-between mt-3"><button type="button" id="pnBookBack" class="btn btn-outline-secondary" onclick="pnBookMove(-1)">ย้อนกลับ</button><button type="button" id="pnBookNext" class="btn btn-primary" onclick="pnBookMove(1)">ถัดไป <i class="bi bi-arrow-right"></i></button></div>
-              <div class="d-grid">
-                <button type="submit" id="btnSubmit" class="btn btn-primary btn-lg mt-2" hidden>ดำเนินการลงนาม</button>
-              </div>
-
+              <input type="hidden" id="startTime" name="startTime"><input type="hidden" id="endTime" name="endTime"><input type="hidden" id="roomName" name="roomName">
+              <p class="pn-form-intro">เลือกวันและเวลาใช้งานก่อน ระบบจะช่วยค้นหาห้องที่เหมาะสม <span class="pn-required">*</span> จำเป็นต้องกรอก</p>
+              <section class="pn-form-section" aria-labelledby="pnDateHeading">
+                <h6 id="pnDateHeading"><i class="bi bi-calendar-event"></i> วันและเวลาใช้งาน <span class="pn-required">*</span></h6>
+                <div class="pn-date-grid">
+                  <div><label for="pnStartDate">วันที่เริ่มใช้งาน</label><input type="date" id="pnStartDate" class="form-control" required></div>
+                  <div><label for="pnStartClock">เวลาเริ่ม (24 ชม.)</label><input type="text" id="pnStartClock" class="form-control pn-clock" maxlength="5" placeholder="09:00" pattern="(?:[01][0-9]|2[0-3]):[0-5][0-9]" required></div>
+                  <div><label for="pnEndDate">วันที่สิ้นสุด</label><input type="date" id="pnEndDate" class="form-control" required></div>
+                  <div><label for="pnEndClock">เวลาสิ้นสุด (24 ชม.)</label><input type="text" id="pnEndClock" class="form-control pn-clock" maxlength="5" placeholder="10:00" pattern="(?:[01][0-9]|2[0-3]):[0-5][0-9]" required></div>
+                </div><div class="pn-date-note" id="pnDateNote" role="status">เวลาไทย (UTC+7) · รองรับการใช้งานข้ามวัน</div>
+              </section>
+              <section class="pn-form-section" aria-labelledby="pnRoomHeading">
+                <h6 id="pnRoomHeading"><i class="bi bi-door-open"></i> ห้องประชุมและจำนวนผู้เข้าร่วม</h6>
+                <div class="pn-room-grid"><div><label for="headcount">จำนวนผู้เข้าประชุม <span class="pn-required">*</span></label><input type="number" class="form-control" id="headcount" name="headcount" min="1" step="1" required placeholder="เช่น 30"></div><div><label for="roomId">ห้องประชุม <span class="pn-required">*</span></label><select class="form-select" id="roomId" name="roomId" required onchange="updateRoomName()"><option value="" selected disabled>กรุณาเลือกวันและเวลา</option></select></div></div>
+                <div class="pn-availability"><span id="pnAvailability" role="status" aria-live="polite">เลือกวันและเวลาเพื่อค้นหาห้องว่าง</span><button type="button" class="btn btn-outline-primary btn-sm" id="pnRefreshAvailability" onclick="pnFindAvailable(true)"><i class="bi bi-arrow-clockwise"></i> ตรวจสอบห้องว่าง</button></div>
+              </section>
+              <section class="pn-form-section" aria-labelledby="pnDetailHeading">
+                <h6 id="pnDetailHeading"><i class="bi bi-card-text"></i> รายละเอียดการประชุม</h6>
+                <div class="mb-3"><label for="topic">หัวข้อการประชุม <span class="pn-required">*</span></label><input type="text" class="form-control" id="topic" name="topic" required placeholder="เช่น ประชุมวางแผนประจำเดือน"></div>
+                <div class="pn-contact-grid"><div><label for="requester">ชื่อผู้จอง <span class="pn-required">*</span></label><input type="text" class="form-control" id="requester" name="requester" required autocomplete="name"></div><div><label for="requesterEmail">อีเมลผู้จอง <span class="pn-required">*</span></label><input type="email" class="form-control" id="requesterEmail" name="requesterEmail" required autocomplete="email" placeholder="สำหรับรับแจ้งเตือน"></div></div>
+                <div id="setupSection" class="pn-setup" style="display:none"><h6>การจัดเตรียมห้องและอุปกรณ์</h6><label for="setupFile">ไฟล์ผังจัดโต๊ะ (ภาพหรือ PDF ไม่เกิน 2 MB)</label><input type="file" class="form-control mb-2" id="setupFile" name="setupFile" accept="image/jpeg,image/png,image/gif,image/webp,application/pdf"><small id="pnExistingLayout" class="text-muted" hidden>มีไฟล์เดิมแล้ว ไม่ต้องแนบใหม่หากใช้ไฟล์เดิม</small><label for="setupDetails" class="mt-2">รายละเอียดเพิ่มเติม</label><textarea class="form-control" id="setupDetails" name="setupDetails" rows="2" placeholder="เช่น จัดโต๊ะรูปแบบตัว U"></textarea></div>
+              </section>
+              <div class="pn-book-actions"><span>ตรวจสอบข้อมูลอีกครั้งก่อนยืนยันลงนาม</span><button type="submit" id="btnSubmit" class="btn btn-primary"><i class="bi bi-check2-circle"></i> ตรวจสอบและลงนาม</button></div>
             </form>
           </div>
         </div>
@@ -276,7 +236,7 @@
     <?!= include('SignatureComponents'); ?>
     <?!= include('javascript'); ?>
     <?!= include('Experience'); ?>
-    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
-    <script src="https://npmcdn.com/flatpickr/dist/l10n/th.js"></script>
+
+
   </body>
 </html>

@@ -66,7 +66,7 @@
   function sanitizeUrl(url) {
     const value = String(url ?? '').trim();
     if (/^https?:\/\//i.test(value)) return value;
-    return 'https://via.placeholder.com/80?text=Room';
+    return '';
   }
 
   function handleServerError(err, fallbackTitle = 'เกิดข้อผิดพลาด') {
@@ -82,10 +82,10 @@
   function validateCapacityClient() {
     const select = document.getElementById('roomId');
     const headcountEl = document.getElementById('headcount');
-    if (!select || select.selectedIndex <= 0 || !headcountEl) return true;
+    if (!select || select.selectedIndex <= 0 || !headcountEl) { if(headcountEl){headcountEl.removeAttribute('max');headcountEl.classList.remove('is-invalid');} return true; }
     const option = select.options[select.selectedIndex];
     const capacity = parseInt(option.getAttribute('data-capacity'), 10) || 0;
-    headcountEl.setAttribute('max', capacity || '');
+    if(capacity>0)headcountEl.setAttribute('max',capacity);else headcountEl.removeAttribute('max');
     const headcount = parseInt(headcountEl.value, 10);
     if (capacity > 0 && headcount > capacity) {
       headcountEl.classList.add('is-invalid');
@@ -97,23 +97,10 @@
 
 
   document.addEventListener('DOMContentLoaded', function() {
+    // Independent core initialization: optional room decoration must not block calendar.
+    initCalendar();
     loadRooms();
     checkLocalSession();
-    
-    // ตั้งค่า Flatpickr ให้หน้าต่างเลือกเวลาดูเป็นมืออาชีพและใช้งานง่ายสุดๆ
-    const flatpickrConfig = {
-        enableTime: true,
-        dateFormat: "Y-m-dTH:i",
-        altInput: true,
-        altFormat: "j F Y, เวลา H:i น.",
-        locale: "th",
-        time_24hr: true,
-        minuteIncrement: 5 // ขยับทีละ 5 นาที
-    };
-    
-    // สั่งให้ Flatpickr ไปทำงานกับช่อง Input ที่มี id="startTime" และ id="endTime"
-    flatpickr("#startTime", flatpickrConfig);
-    flatpickr("#endTime", flatpickrConfig);
   });
 
   // --- 1. Load Rooms & Colors ---
@@ -121,59 +108,68 @@
     google.script.run
       .withSuccessHandler(function(rooms) {
         allRooms = Array.isArray(rooms) ? rooms : [];
-        renderRoomSidebar(allRooms);
-        pnRefreshRooms(allRooms);
         populateRoomDropdown(allRooms);
-        if (calendar) {
-          calendar.refetchEvents();
-        } else {
-          initCalendar();
-        }
+        if (typeof pnRefreshRooms === 'function') pnRefreshRooms(allRooms);
+        if (calendar) calendar.refetchEvents();
+        try { renderRoomSidebar(allRooms); } catch (err) { console.warn('Room decoration unavailable', err); }
+        if (document.getElementById('bookingModal').classList.contains('show')) pnFindAvailable(true);
       })
       .withFailureHandler(function(err) {
-        handleServerError(err, 'โหลดข้อมูลห้องไม่สำเร็จ');
+        document.getElementById('roomListContainer').innerHTML='<div class="p-3 text-danger">โหลดข้อมูลห้องไม่สำเร็จ <button type="button" class="btn btn-outline-primary btn-sm" onclick="loadRooms()">ลองใหม่</button></div>';
+        console.warn('Room data unavailable', err);
       })
       .getRoomsData();
   }
 
   // --- 2. Init FullCalendar ---
   function initCalendar() {
-    var calendarEl = document.getElementById('calendar');
-    calendar = new FullCalendar.Calendar(calendarEl, {
-      initialView: window.innerWidth < 576 ? 'listWeek' : 'dayGridMonth',
-      headerToolbar: {
-        left: 'prev,next today',
-        center: 'title',
-        right: 'dayGridMonth,timeGridWeek,timeGridDay,listWeek'
-      },
-      locale: 'th',
-      selectable: true,
-      dayMaxEvents: true, 
-      
-      events: function(info, successCallback, failureCallback) {
-        google.script.run.withSuccessHandler(function(events) {
-          events.forEach(evt => {
-            const room = allRooms.find(r => r.roomId == evt.resourceId);
-            const roomColor = (room && room.color) ? room.color : '#3788d8';
-            evt.backgroundColor = roomColor;
-            evt.borderColor = roomColor;
-            evt.textColor = '#ffffff';
-            const status=evt.extendedProps.status; evt.classNames=status==='Pending Approval'?['pn-event-pending']:status==='Approval Error'?['pn-event-error']:[];
-          });
-          const filter=document.getElementById("pnRoomFilter").value;
-          successCallback(events.filter(evt=>!filter||String(evt.resourceId)===filter));
-        }).withFailureHandler(err=>{failureCallback(err);handleServerError(err,"โหลดปฏิทินไม่สำเร็จ");}).getBookingsData(info.startStr,info.endStr,getSessionToken());
-      },
-      
-      dateClick: function(info) {
-        openBookingModal(info.dateStr);
-      },
-      
-      eventClick: function(info) {
-        handleEventClick(info);
-      }
-    });
-    calendar.render();
+    const el = document.getElementById('calendar');
+    try {
+      if (!window.FullCalendar || !FullCalendar.Calendar) throw new Error('FullCalendar unavailable');
+      calendar = new FullCalendar.Calendar(el, {
+        initialView: 'dayGridMonth',
+        headerToolbar: {left:'prev,next today',center:'title',right:window.innerWidth<600?'dayGridMonth,listWeek':'dayGridMonth,timeGridWeek,timeGridDay,listWeek'},
+        locale:'th', buttonText:{today:'วันนี้',month:'เดือน',week:'สัปดาห์',day:'วัน',list:'รายการ'},
+        selectable:true, dayMaxEvents:true,
+        events: function(info, success, failure) { pnFetchCalendar(info.startStr,info.endStr,success,failure); },
+        dateClick:info=>openBookingModal(info.dateStr), eventClick:handleEventClick
+      });
+      calendar.render();
+    } catch(err) {
+      console.warn('Using built-in calendar',err);
+      calendar=pnFallbackCalendar(el);
+      calendar.render();
+    }
+  }
+
+  /** Read bookings with visible failure state, shared by both calendar renderers. */
+  function pnFetchCalendar(start,end,success,failure) {
+    google.script.run.withSuccessHandler(events=>{
+      try {
+        if(!Array.isArray(events))throw new Error('รูปแบบข้อมูลปฏิทินไม่ถูกต้อง');
+        const filter=document.getElementById('pnRoomFilter').value;
+        const items=events.filter(e=>e&&(!filter||String(e.resourceId)===filter)).map(e=>{
+          const r=allRooms.find(r=>String(r.roomId)===String(e.resourceId)), color=r&&/^#[0-9a-f]{6}$/i.test(r.color)?r.color:'#176b68', status=(e.extendedProps||{}).status;
+          return Object.assign({},e,{backgroundColor:color,borderColor:color,textColor:'#fff',classNames:status==='Pending Approval'?['pn-event-pending']:status==='Approval Error'?['pn-event-error']:[]});
+        });
+        pnCalendarNotice(''); success(items);
+      } catch(e) {pnCalendarNotice(e.message);failure(e);}
+    }).withFailureHandler(e=>{pnCalendarNotice(e.message||String(e));failure(e);}).getBookingsData(start,end,getSessionToken());
+  }
+  function pnCalendarNotice(message){const n=document.getElementById('pnCalendarNotice');n.hidden=!message;n.replaceChildren();if(message){n.append(document.createTextNode('โหลดปฏิทินไม่สำเร็จ: '+message+' '));const b=document.createElement('button');b.type='button';b.className='btn btn-outline-primary btn-sm';b.textContent='ลองใหม่';b.onclick=()=>calendar&&calendar.refetchEvents();n.append(b);}}
+
+  /** Dependency-free month view if the external calendar cannot initialize. */
+  function pnFallbackCalendar(el){
+    let month=new Date(Date.now()+7*3600000).toISOString().slice(0,7),generation=0;
+    const api={render:()=>draw(),refetchEvents:()=>draw(),updateSize:()=>{}};
+    function draw(){
+      const ticket=++generation,[y,m]=month.split('-').map(Number),first=new Date(Date.UTC(y,m-1,1)),last=new Date(Date.UTC(y,m,1)),dateKey=d=>d.toISOString().slice(0,10),move=n=>{month=new Date(Date.UTC(y,m-1+n,1)).toISOString().slice(0,7);draw();};
+      el.replaceChildren();const toolbar=document.createElement('div');toolbar.className='pn-fallback-toolbar';const btn=(label,fn)=>{const b=document.createElement('button');b.type='button';b.className='btn btn-outline-primary btn-sm';b.textContent=label;b.onclick=fn;return b;};const title=document.createElement('strong');title.textContent=first.toLocaleDateString('th-TH',{month:'long',year:'numeric',timeZone:'UTC'});toolbar.append(btn('‹',()=>move(-1)),title,btn('›',()=>move(1)),btn('วันนี้',()=>{month=new Date(Date.now()+25200000).toISOString().slice(0,7);draw();}));el.append(toolbar);
+      const grid=document.createElement('div');grid.className='pn-fallback-grid';['อา.','จ.','อ.','พ.','พฤ.','ศ.','ส.'].forEach(t=>{const h=document.createElement('div');h.className='pn-fallback-dayname';h.textContent=t;grid.append(h);});for(let i=0;i<first.getUTCDay();i++)grid.append(document.createElement('div'));
+      const cells=new Map();for(let day=1;day<=new Date(Date.UTC(y,m,0)).getUTCDate();day++){const key=dateKey(new Date(Date.UTC(y,m-1,day))),cell=document.createElement('div');cell.className='pn-fallback-cell';const b=btn(String(day),()=>openBookingModal(key));b.setAttribute('aria-label','จองวันที่ '+key);cell.append(b);cells.set(key,cell);grid.append(cell);}while(grid.children.length%7)grid.append(document.createElement('div'));el.append(grid);
+      const loading=document.createElement('p');loading.className='small text-muted mt-2';loading.textContent='กำลังโหลดรายการจอง...';el.append(loading);
+      pnFetchCalendar(dateKey(first)+'T00:00:00+07:00',dateKey(last)+'T00:00:00+07:00',events=>{if(ticket!==generation)return;loading.textContent=events.length?'':'ไม่มีรายการจองในเดือนนี้';for(const e of events){const a=new Date(e.start),b=new Date(e.end);if(!Number.isFinite(a.getTime())||!Number.isFinite(b.getTime()))continue;for(const [key,cell] of cells){const start=new Date(key+'T00:00:00+07:00'),end=new Date(start.getTime()+86400000);if(a>=end||b<=start)continue;const link=document.createElement('button');link.type='button';link.className='pn-fallback-event';link.style.backgroundColor=e.backgroundColor;link.textContent=e.title||'รายการจอง';link.onclick=()=>handleEventClick({event:Object.assign({},e,{start:a,end:b})});cell.append(link);}}},()=>{if(ticket===generation)loading.textContent='ไม่สามารถโหลดรายการจองได้';});
+    }return api;
   }
 
   // --- 3. Event Interaction (View vs Edit) ---
@@ -242,7 +238,7 @@
 
       html += `
         <div class="list-group-item d-flex align-items-center mb-2 shadow-sm rounded-1" style="${styleColor}">
-          <img src="${escapeAttr(imgUrl)}" class="rounded me-3" width="50" height="50" style="object-fit:cover;" alt="room image">
+          <div class="pn-room-thumb me-2">${imgUrl ? `<img src="${escapeAttr(imgUrl)}" alt="" loading="lazy" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span hidden>ห้อง</span>` : `<span>ห้อง</span>`}</div>
           <div style="flex:1;">
             <h6 class="mb-0 fw-bold">${escapeHtml(room.roomName)}</h6>
             <div class="d-flex align-items-center flex-wrap gap-2 mt-1">
@@ -275,38 +271,30 @@
 
   function initTooltips() {
     const tooltipTriggerList = document.querySelectorAll('[data-bs-toggle="tooltip"]');
-    const tooltipList = [...tooltipTriggerList].map(tooltipTriggerEl => new bootstrap.Tooltip(tooltipTriggerEl));
+    if (!window.bootstrap || !bootstrap.Tooltip) return;
+    for(const node of tooltipTriggerList) {try {bootstrap.Tooltip.getOrCreateInstance(node);} catch(e) {console.warn('Tooltip unavailable',e);}}
   }
 
   function populateRoomDropdown(rooms) {
     const select = document.getElementById('roomId');
-    let options = '<option value="" selected disabled>-- กรุณาเลือกห้อง --</option>';
-    rooms.forEach(room => {
-      options += `<option value="${escapeAttr(room.roomId)}" data-name="${escapeAttr(room.roomName)}" data-capacity="${escapeAttr(room.capacity)}" data-require-setup="${escapeAttr(room.requireSetup)}">
-                    ${escapeHtml(room.roomName)} (รองรับ ${escapeHtml(room.capacity)} คน)
-                  </option>`;
-    });
-    select.innerHTML = options;
+    const previous=select.value;
+    select.replaceChildren(new Option('กรุณาเลือกห้องประชุม',''));
+    select.options[0].disabled=true;
+    rooms.forEach(room=>{const o=new Option(room.roomName+' (รองรับ '+(room.capacity||'ไม่ระบุ')+' คน)',room.roomId);o.dataset.name=room.roomName;o.dataset.capacity=room.capacity;o.dataset.requireSetup=String(room.requireSetup);select.add(o);});
+    if(rooms.some(r=>String(r.roomId)===previous))select.value=previous;
+    else select.value='';
+    updateRoomName();
   }
 
   function updateRoomName() {
-    const select = document.getElementById('roomId');
-    if (select.selectedIndex > 0) {
-      const option = select.options[select.selectedIndex];
-      document.getElementById('roomName').value = option.getAttribute('data-name');
-
-      const requireSetup = option.getAttribute('data-require-setup') === 'true';
-      const setupSection = document.getElementById('setupSection');
-      const setupFile = document.getElementById('setupFile');
-      if (requireSetup) {
-          setupSection.style.display = 'flex';
-          setupFile.setAttribute('required', 'required');
-      } else {
-          setupSection.style.display = 'none';
-          setupFile.removeAttribute('required');
-      }
-      validateCapacityClient();
-    }
+    const select=document.getElementById('roomId'),option=select.value?select.options[select.selectedIndex]:null;
+    document.getElementById('roomName').value=option?option.dataset.name:'';
+    const required=!!option&&option.dataset.requireSetup==='true';
+    const keepExisting=required&&document.getElementById('isEdit').value==='true'&&!!pnExistingLayout;
+    document.getElementById('setupSection').style.display=required?'block':'none';
+    document.getElementById('setupFile').required=required&&!keepExisting;
+    document.getElementById('pnExistingLayout').hidden=!keepExisting;
+    validateCapacityClient();
   }
 
   // --- 5. Booking Actions (Save/Edit/Cancel) ---
@@ -322,54 +310,11 @@ function openBookingModal(dateStr) {
     document.getElementById('isEdit').value = 'false';
     document.getElementById('bookingModalTitle').innerHTML = '<i class="bi bi-pencil-square"></i> แบบฟอร์มจองห้องประชุม';
     
-    // ซ่อนกล่องจัดโต๊ะและปลด Required ไว้ก่อนเสมอเมื่อเปิดฟอร์มจองใหม่
-    const setupSection = document.getElementById('setupSection');
-    const setupFile = document.getElementById('setupFile');
-    if (setupSection) setupSection.style.display = 'none';
-    if (setupFile) setupFile.removeAttribute('required');
-
-    // ดึง Instance ของ Flatpickr มาเพื่อสั่งงาน
-    const fpStart = document.getElementById('startTime')._flatpickr;
-    const fpEnd = document.getElementById('endTime')._flatpickr;
-    
-    // ล้างค่า Flatpickr ให้ว่างก่อนเริ่มใหม่
-    if (fpStart) fpStart.clear();
-    if (fpEnd) fpEnd.clear();
-    
-    if(dateStr) {
-      let defaultStart, defaultEnd;
-      
-      if (dateStr.length === 10) { 
-        // กรณีผู้ใช้คลิกช่องวันที่ในมุมมองรายเดือน (Month View)
-        // กำหนดค่าเริ่มต้นของวันนั้นเป็น 09:00 น. และสิ้นสุด 10:00 น.
-        defaultStart = dateStr + 'T09:00';
-        defaultEnd = dateStr + 'T10:00';
-      } else { 
-        // กรณีผู้ใช้คลิกเวลาแบบเจาะจงในมุมมองรายสัปดาห์/รายวัน (Week/Day View)
-        defaultStart = dateStr.slice(0, 16); 
-        
-        // สร้างเวลาสิ้นสุดโดยบวกเพิ่ม 1 ชั่วโมงจากเวลาที่คลิก
-        let d = new Date(dateStr);
-        d.setHours(d.getHours() + 1);
-        const offset = d.getTimezoneOffset() * 60000;
-        defaultEnd = new Date(d.getTime() - offset).toISOString().slice(0, 16);
-      }
-      
-      // ใช้คำสั่ง setDate ของ Flatpickr เพื่อยัดค่าใส่วันที่และเวลาให้ผู้ใช้อัตโนมัติ
-      if (fpStart) {
-        fpStart.setDate(defaultStart);
-      } else {
-        document.getElementById('startTime').value = defaultStart; // เผื่อกรณี Flatpickr ยังไม่โหลด
-      }
-      
-      if (fpEnd) {
-        fpEnd.setDate(defaultEnd);
-      } else {
-        document.getElementById('endTime').value = defaultEnd; // เผื่อกรณี Flatpickr ยังไม่โหลด
-      }
-    }
-    
-    new bootstrap.Modal(document.getElementById('bookingModal')).show();
+    pnExistingLayout=false;
+    populateRoomDropdown(allRooms);
+    pnResetBookingFields();
+    if(dateStr){const raw=String(dateStr);const start=raw.length===10?raw+'T09:00':/[Zz]|[+-]\d{2}:\d{2}$/.test(raw)?new Date(new Date(raw).getTime()+25200000).toISOString().slice(0,16):raw.slice(0,16);const end=new Date(new Date(start+'+07:00').getTime()+3600000+25200000).toISOString().slice(0,16);pnSetBookingRange(start,end);}
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('bookingModal')).show();
   }
 
   function openEditBooking(event) {
@@ -388,45 +333,14 @@ function openBookingModal(dateStr) {
     document.getElementById('headcount').value = props.headcount || '';
     document.getElementById('setupDetails').value = props.setupDetails || '';
 
-    const rId = props.roomId;
-    const select = document.getElementById('roomId');
-    if (rId) {
-        select.value = rId;
-        updateRoomName();
-    }
-
-    // หากเคยแนบไฟล์จัดโต๊ะไว้แล้ว ไม่บังคับแนบใหม่ตอนแก้ไข เว้นแต่ผู้ใช้ต้องการเปลี่ยนไฟล์เอง
-    if (props.layoutUrl) {
-      const setupFile = document.getElementById('setupFile');
-      if (setupFile) setupFile.removeAttribute('required');
-    }
-
-    const toLocalISO = (date) => {
-        if (!date) return '';
-        const offset = date.getTimezoneOffset() * 60000;
-        return new Date(date.getTime() - offset).toISOString().slice(0, 16);
-    };
-
-    const startStr = toLocalISO(event.start);
-    const endStr = event.end ? toLocalISO(event.end) : '';
-
-    const fpStart = document.getElementById('startTime')._flatpickr;
-    const fpEnd = document.getElementById('endTime')._flatpickr;
-
-    if (fpStart && startStr) {
-      fpStart.setDate(startStr);
-    } else {
-      document.getElementById('startTime').value = startStr;
-    }
-
-    if (fpEnd && endStr) {
-      fpEnd.setDate(endStr);
-    } else {
-      document.getElementById('endTime').value = endStr;
-    }
-
-    document.getElementById('bookingModalTitle').innerHTML = '<i class="bi bi-pencil-square"></i> แก้ไขข้อมูลการจอง';
-    new bootstrap.Modal(document.getElementById('bookingModal')).show();
+    pnExistingLayout=!!props.layoutUrl;
+    populateRoomDropdown(allRooms);
+    document.getElementById('roomId').value=props.roomId||'';
+    updateRoomName();
+    const local=d=>d?new Date(d.getTime()+25200000).toISOString().slice(0,16):'';
+    pnSetBookingRange(local(event.start),local(event.end));
+    document.getElementById('bookingModalTitle').innerHTML='<i class="bi bi-pencil-square"></i> แก้ไขข้อมูลการจอง';
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('bookingModal')).show();
   }
 
 function toBase64(file) {
@@ -446,6 +360,7 @@ async function handleFormSubmit(e) {
         return;
     }
 
+    if (!pnValidateBookingFields()) return;
     const topic = document.getElementById('topic').value.trim();
     const requester = document.getElementById('requester').value.trim();
     const email = document.getElementById('requesterEmail').value.trim();
@@ -474,8 +389,8 @@ async function handleFormSubmit(e) {
         return;
     }
 
-    const startObj = new Date(document.getElementById('startTime').value);
-    const endObj = new Date(document.getElementById('endTime').value);
+    const startObj = new Date(document.getElementById('startTime').value+'+07:00');
+    const endObj = new Date(document.getElementById('endTime').value+'+07:00');
 
     if (isNaN(startObj.getTime()) || isNaN(endObj.getTime())) {
         Swal.fire('วันเวลาไม่ถูกต้อง', 'กรุณาเลือกเวลาเริ่มและเวลาสิ้นสุดให้ครบถ้วน', 'warning');
@@ -521,8 +436,8 @@ async function handleFormSubmit(e) {
     }
 
     const formatDateTime = (dateObj) => {
-        return dateObj.toLocaleDateString('th-TH', { year: 'numeric', month: 'long', day: 'numeric' }) +
-               ' เวลา ' + dateObj.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }) + ' น.';
+        return dateObj.toLocaleDateString('th-TH', { year: 'numeric', month: 'long', day: 'numeric', timeZone:'Asia/Bangkok' }) +
+               ' เวลา ' + dateObj.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', hourCycle:'h23', timeZone:'Asia/Bangkok' }) + ' น.';
     };
     const startStrDisplay = formatDateTime(startObj);
     const endStrDisplay = formatDateTime(endObj);

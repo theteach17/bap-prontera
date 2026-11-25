@@ -1,4 +1,7 @@
-# Project Prontera — Next Generation R2
+# Project Prontera — Next Generation R2.1
+
+**R2.1 UX hotfix: อ่าน `R2_1_HOTFIX.md` ก่อน Deploy**
+
 
 **Release candidate สำหรับ Controlled Production Rollout — ยังไม่ผ่านการตรวจรับ Runtime จริง**
 
@@ -6,12 +9,12 @@
 
 ## ขอบเขตและหลักฐาน
 
-- หน้าใหม่: Sidebar/Navigation, หน้าแรก, Room Finder, ปฏิทิน, แบบฟอร์ม 3 ขั้น, My Bookings พร้อม Timeline, Approval Center, Signature Profile, Admin Center, Dashboard, หน้าพิจารณาและประเมิน, Digital Room Display, QR Verification.
+- หน้าใหม่: Sidebar/Navigation, หน้าแรก, Room Finder, ปฏิทิน, แบบฟอร์มหน้าเดียว เริ่มจากวันเวลา, My Bookings พร้อม Timeline, Approval Center, Signature Profile, Admin Center, Dashboard, หน้าพิจารณาและประเมิน, Digital Room Display, QR Verification.
 - คงระบบ Signature Vault, Profile, SHA-256, Snapshot และ Workspace login จาก R1.1.
 - เพิ่ม Final PDF Worker แบบ durable queue, retry จำกัด 3 ครั้ง, heartbeat, ตรวจสถานะและลายเซ็นก่อนประมวลผล; ไม่เปลี่ยนสถานะเป็น Approved จนสร้าง PDF สำเร็จ. เอกสารขั้นแรก/การแจ้งเตือนยัง synchronous; ยังไม่ใช่ Notification Outbox หรือ background architecture เต็มรูปแบบ.
 - เพิ่ม Maintenance Blocking แบบไม่ยกเลิกการจองเดิม, recurring weekly planner (ยื่นและลงนามทีละรายการ), QR code แบบ local encoder, analytics ชั่วโมงจองและเวลาอนุมัติ, จอแสดงสถานะห้อง.
 - `R2_REQUIREMENTS.md` เป็นบัญชีตรวจรับข้อกำหนดและงานคงเหลือ. **ไม่ถือว่าครบ Master Plan ทั้งหมด**; PWA/service worker, batch recurring series, full outbox, initial-PDF queue, performance benchmark และการตรวจรับ Production ยังไม่เสร็จ.
-- `TEST_REPORT_R2.txt`: 102 checks ผ่าน, function entry coverage 265/265 (เฉพาะ function declarations ที่ instrumented, ไม่ใช่ branch coverage). `BROWSER_TEST_R2.txt`: 15 checks Chromium โดย mock RPC/FullCalendar/Flatpickr/SweetAlert. `QR_TEST_R2.txt`: ถอดรหัส QR จากภาพที่วางใน final-PDF simulation ได้. ไม่ใช่การทดสอบ Google Workspace/Slides/PDF จริง.
+- `TEST_REPORT_R2.txt`: 102 checks ผ่าน, function entry coverage 265/265 (เฉพาะ function declarations ที่ instrumented, ไม่ใช่ branch coverage). `BROWSER_TEST_R2_1.txt`: 22 checks Chromium โดย mock RPC/FullCalendar/SweetAlert; native date inputs และ fallback calendar ใช้ DOM จริง. `QR_TEST_R2.txt`: ถอดรหัส QR จากภาพที่วางใน final-PDF simulation ได้. ไม่ใช่การทดสอบ Google Workspace/Slides/PDF จริง.
 - เอกสาร R1.1 เดิมใน `docs/R1_1/` และเอกสาร baseline เดิมใช้เป็นประวัติอ้างอิงเท่านั้น; ให้ยึด README นี้สำหรับ R2.
 
 ## 1. สำรองและเตรียมติดตั้ง
@@ -46,7 +49,7 @@
 ## 3. Controlled rollout ฐานจริง
 
 1. Deploy > Manage deployments > Edit > New version บน deployment เดิม; คง Execute as และ access (USER_DEPLOYING, DOMAIN) และ URL เดิม. อย่าใช้ New deployment ถ้าต้องรักษาลิงก์เดิม.
-2. เปิด URL จริงหลัง Deploy ด้วยบัญชีที่ได้รับอนุญาต (Incognito หากต้องการ). ตรวจ sidebar, room catalog, ปฏิทิน, มือถือ, wizard 3 ขั้น, dashboard, Admin, profile, My Bookings, Approval Center, หน้า approve/evaluate และรายการเก่าที่ยังรออนุมัติ. ยังไม่เปลี่ยนข้อมูลจริงในช่วง read-only smoke test.
+2. เปิด URL จริงหลัง Deploy ด้วยบัญชีที่ได้รับอนุญาต (Incognito หากต้องการ). ตรวจ sidebar, room catalog, ปฏิทิน, มือถือ, แบบฟอร์มหน้าเดียวและผลค้นหาห้องว่าง, dashboard, Admin, profile, My Bookings, Approval Center, หน้า approve/evaluate และรายการเก่าที่ยังรออนุมัติ. ยังไม่เปลี่ยนข้อมูลจริงในช่วง read-only smoke test.
 3. สร้างคำขอทดสอบที่ได้รับอนุญาตในช่วงเวลาห้องว่างจริง หัวข้อชัดเจนว่าทดสอบ. ใช้ผู้ลงนามจริงที่ยินยอมทั้งสามขั้น ตรวจ Booking ID, การกันห้อง, PDF, อีเมล, ลิงก์เดิม, Final PDF, สถานะและแบบประเมิน. ตรวจ Executions. ห้ามทดสอบการลงนามแทนบุคคลอื่น. หากผิดปกติหยุด rollout.
 4. ตรวจ Workspace identity ของแต่ละบัญชีผ่าน `getPronteraReadiness` จาก Web App (หน้า Profile) ไม่ใช่จาก Editor เพียงอย่างเดียว. เมื่อยืนยันแล้วให้ deployer รัน `setupPronteraSignatureVault` จาก Editor; ตรวจ private folder และชีท SignatureProfiles; เปิด `PRONTERA_SIGNATURE_ENABLED=true` แล้วรัน preflight ซ้ำ. ทดสอบบันทึก เปลี่ยนลายเซ็น ลงนามครั้งถัดไป และ Final PDF ยังใช้ snapshot เดิม. เปิด strict flags ทีละตัวหลังตรวจรับสิทธิ์ของผู้ใช้จริง; เปิด domain sharing เมื่อทดสอบผู้รับไฟล์ครบ. ไม่ลบผู้ใช้เดิมก่อนตรวจรับ SSO.
 5. Final Worker (optional): รัน `setupPronteraFinalWorker` ด้วย deployer ขณะ flag false; ตรวจมี trigger `runPronteraFinalWorker_` เพียงหนึ่งตัว ทุก 1 นาที. รอ heartbeat จริงหรือรัน `runPronteraFinalWorkerNow` ใน Editor ขณะ flag ยัง false; จากนั้นเปิด `PRONTERA_FINAL_WORKER_ENABLED=true`, รัน preflight ซ้ำ. ทดสอบคำขอใหม่อนุมัติขั้น 3: ยัง Pending Approval จน Worker สร้าง PDF เสร็จ; Admin ดู Worker Health, heartbeat, queue, retry, failed. ถ้า heartbeat เก่า >3 นาที การส่งใหม่ fallback เป็น sync. การ retry ไม่เกิน 3; หาก FAILED ให้ตรวจ PDF/ApprovalFlow/Booking ก่อนใช้ admin recovery เดิม ห้ามกดซ้ำไม่ตรวจหลักฐาน. คิวไม่ได้รับประกัน exactly-once ของผลข้างเคียง Drive/Mail.

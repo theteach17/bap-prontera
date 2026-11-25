@@ -1,3 +1,11 @@
+# R2.1 — Calendar-first booking hotfix
+
+- Single-page date-first booking with native date, explicit HH:mm fields and Bangkok display.
+- Inline availability, capacity and required attachment validation; preserved existing confirmation and signing workflow.
+- Calendar startup independent of room decoration; fallback month renderer and visible retry on RPC error.
+- Compact homepage; no server, manifest, trigger, or database changes.
+- 102 offline regression and 22 browser mock checks, not live Workspace verification.
+
 # R2 — 25 พฤศจิกายน 2569
 
 - Redesign app shell, navigation, three-step booking, request timeline, profile and shared visual design.

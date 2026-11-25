@@ -1,0 +1,22 @@
+PASS Desktop home and calendar
+PASS My Bookings timeline and escaping
+PASS Approval inbox
+PASS Profile
+PASS Single page required date validation
+PASS Date first auto availability and setup requirement
+PASS Required attachment, reversed time, overnight and existing confirmation
+PASS Availability error preserves usable room selector
+PASS Edit preserves existing layout and Bangkok time
+PASS Management dashboard
+PASS Staff view cleared on logout
+PASS Mobile menu and page width
+PASS Calendar fallback renders events without FullCalendar
+PASS Calendar RPC error and retry
+PASS Room dropdown independent of tooltip
+PASS Fallback date click opens prefilled form
+PASS Mobile booking layout
+PASS approve.html mobile route render
+PASS evaluate.html mobile route render
+PASS verify.html mobile route render
+PASS display.html mobile route render
+PASS No uncaught browser errors

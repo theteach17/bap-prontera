@@ -7,7 +7,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css">
   <style>
-    body{font-family:'Prompt',sans-serif;background:#f4f7fb;padding-bottom:40px}.hero{background:linear-gradient(135deg,#0d6efd,#6610f2);color:white;padding:28px 16px;text-align:center;border-radius:0 0 26px 26px}.main-card{max-width:900px;margin:-20px auto 0;border:0;border-radius:18px;box-shadow:0 14px 40px rgba(20,30,70,.12)}#sigCanvas{width:100%;height:190px;border:1px solid #ced4da;border-radius:12px;background:white;touch-action:none;cursor:crosshair}.step-pill{display:inline-block;padding:4px 10px;border-radius:999px;background:#eef2ff;margin:3px;font-size:.84rem}.signature-preview{max-height:150px;border:1px solid #dee2e6;border-radius:10px;padding:6px;background:#fff}
+    body{font-family:'Prompt',sans-serif;background:#f4f7fb;padding-bottom:40px}.hero{background:linear-gradient(135deg,#0d6efd,#6610f2);color:white;padding:28px 16px;text-align:center;border-radius:0 0 26px 26px}.main-card{max-width:900px;margin:-20px auto 0;border:0;border-radius:18px;box-shadow:0 14px 40px rgba(20,30,70,.12)}#sigCanvas{width:100%;height:190px;border:1px solid #ced4da;border-radius:12px;background:white;touch-action:none;cursor:crosshair}.step-pill{display:inline-block;padding:4px 10px;border-radius:999px;background:#eef2ff;margin:3px;font-size:.84rem}.critical-info{background:#fff7e6;border:1px solid #ffd591;border-radius:12px;padding:12px 14px;margin-top:12px}.layout-info{background:#f8fbff;border:1px solid #b6d4fe;border-radius:12px;padding:14px 16px;margin-top:14px}.layout-details{white-space:pre-wrap;background:#fff;border:1px solid #e9ecef;border-radius:10px;padding:10px}.signature-preview{max-height:150px;border:1px solid #dee2e6;border-radius:10px;padding:6px;background:#fff}
   </style>
 </head>
 <body>
@@ -27,8 +27,30 @@
           </div>
           <hr>
           <h5 id="topic" class="fw-bold"></h5>
-          <div class="row small text-muted mt-2">
-            <div class="col-md-6">รหัสการจอง: <span id="bookingId"></span></div>
+          <div class="critical-info">
+            <div class="fw-bold text-warning-emphasis"><i class="bi bi-calendar-check"></i> โปรดตรวจสอบรายการก่อนลงนาม</div>
+            <div class="row small mt-2">
+              <div class="col-md-6"><b>วันที่ใช้ห้อง:</b> <span id="useDateStr" class="text-primary fw-bold"></span></div>
+              <div class="col-md-6"><b>เวลาใช้ห้อง:</b> <span id="useTimeStr" class="text-primary fw-bold"></span></div>
+              <div class="col-md-6"><b>รหัสอนุมัติ:</b> <span id="approvalId"></span></div>
+              <div class="col-md-6"><b>รหัสการจอง:</b> <span id="bookingId"></span></div>
+            </div>
+            <div id="duplicateWarningBox" class="alert alert-warning mt-2 mb-0 py-2 small" style="display:none;"></div>
+          </div>
+          <div id="layoutInfoBox" class="layout-info" style="display:none;">
+            <div class="fw-bold text-primary mb-2"><i class="bi bi-layout-text-window-reverse"></i> รูปแบบการจัดโต๊ะและอุปกรณ์เพิ่มเติม</div>
+            <div id="layoutSetupDetailsRow" class="mb-3" style="display:none;">
+              <div class="small text-muted mb-1">รายละเอียดที่ผู้จองระบุ</div>
+              <div id="layoutSetupDetailsText" class="layout-details small"></div>
+            </div>
+            <div id="layoutFileRow" class="mb-2" style="display:none;">
+              <div class="small text-muted mb-1">ไฟล์ผังจัดโต๊ะที่แนบมากับรายการจอง</div>
+              <a id="layoutFileLink" href="#" target="_blank" rel="noopener noreferrer" class="btn btn-outline-primary btn-sm"><i class="bi bi-box-arrow-up-right"></i> เปิดไฟล์ผังจัดโต๊ะ</a>
+              <div class="form-text">ระบบเปิดไฟล์ในแท็บใหม่ เพื่อให้ตรวจสอบรูปแบบการจัดสถานที่ก่อนลงนาม</div>
+            </div>
+            <div id="layoutWarningRow" class="alert alert-warning py-2 small mb-0" style="display:none;"></div>
+          </div>
+          <div class="row small text-muted mt-3">
             <div class="col-md-6">ห้อง: <span id="roomName"></span></div>
             <div class="col-md-6">ผู้จอง: <span id="requester"></span></div>
             <div class="col-md-6">จำนวน: <span id="headcount"></span> คน</div>
@@ -61,8 +83,91 @@
     let isDrawing = false;
     document.addEventListener('DOMContentLoaded', () => { initCanvas(); loadApprovalDetails(); });
     function escapeHtml(v){return String(v??'').replace(/[&<>'"]/g,s=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[s]));}
-    function loadApprovalDetails(){ if(!approvalToken){showError('ไม่พบ token สำหรับลงนาม');return;} google.script.run.withSuccessHandler(d=>{document.getElementById('loading').style.display='none'; if(!d.available){showError(d.message);return;} document.getElementById('mainBox').style.display='block'; document.getElementById('stepNo').innerText=d.stepNo; document.getElementById('stepName').innerText=d.stepName; document.getElementById('topic').innerText=d.topic; document.getElementById('bookingId').innerText=d.bookingId; document.getElementById('roomName').innerText=d.roomName; document.getElementById('requester').innerText=d.requester; document.getElementById('headcount').innerText=d.headcount; document.getElementById('startStr').innerText=d.startStr; document.getElementById('endStr').innerText=d.endStr; document.getElementById('signerName').value=d.approverName||''; document.getElementById('signerEmail').value=(d.approverEmail||'').split(',')[0]||''; if(d.initialMemoPdfUrl){document.getElementById('memoLink').href=d.initialMemoPdfUrl;} document.getElementById('stepStatus').innerHTML=(d.steps||[]).map(s=>`<span class="step-pill">${s.stepNo}. ${escapeHtml(s.stepName)}: <b>${escapeHtml(s.status)}</b></span>`).join(''); }).withFailureHandler(e=>showError(e.message)).getApprovalDetailsByToken(approvalToken);}
-    function showError(msg){document.getElementById('loading').style.display='none';document.getElementById('mainBox').style.display='none';document.getElementById('errorBox').style.display='block';document.getElementById('errorText').innerText=msg||'เกิดข้อผิดพลาด';}
+    function renderLayoutInfo(d){
+      const box=document.getElementById('layoutInfoBox');
+      const details=String(d.setupDetails||'').trim();
+      const layoutUrl=String(d.layoutUrl||'').trim();
+      const warning=String(d.layoutWarning||'').trim();
+      const shouldShow=!!(details||layoutUrl||warning||d.roomRequireSetup);
+      if(!shouldShow){box.style.display='none';return;}
+      box.style.display='block';
+      const detailsRow=document.getElementById('layoutSetupDetailsRow');
+      const detailsText=document.getElementById('layoutSetupDetailsText');
+      if(details){detailsRow.style.display='block';detailsText.textContent=details;}else{detailsRow.style.display='none';detailsText.textContent='';}
+      const fileRow=document.getElementById('layoutFileRow');
+      const fileLink=document.getElementById('layoutFileLink');
+      if(layoutUrl){fileRow.style.display='block';fileLink.href=layoutUrl;}else{fileRow.style.display='none';fileLink.removeAttribute('href');}
+      const warningRow=document.getElementById('layoutWarningRow');
+      if(warning){warningRow.style.display='block';warningRow.textContent=warning;}else{warningRow.style.display='none';warningRow.textContent='';}
+    }
+    let approvalLoadTimer = null;
+    function getClientErrorMessage(error){
+      if(!error) return 'ไม่สามารถโหลดข้อมูลการลงนามได้ กรุณาลองเปิดลิงก์อีกครั้ง';
+      if(typeof error === 'string') return error;
+      return error.message || String(error) || 'ไม่สามารถโหลดข้อมูลการลงนามได้';
+    }
+    function loadApprovalDetails(){
+      if(!approvalToken){showError('ไม่พบ token สำหรับลงนาม');return;}
+      approvalLoadTimer=setTimeout(()=>{
+        showError('ระบบใช้เวลาโหลดข้อมูลนานกว่าปกติ กรุณารีเฟรชหน้า หรือติดต่อผู้ดูแลระบบหากยังไม่สามารถเปิดได้');
+      },45000);
+      google.script.run.withSuccessHandler(d=>{
+        if(approvalLoadTimer){clearTimeout(approvalLoadTimer);approvalLoadTimer=null;}
+        try{
+          if(!d || typeof d !== 'object'){
+            throw new Error('ระบบไม่ได้รับข้อมูลตอบกลับที่สมบูรณ์จากเซิร์ฟเวอร์');
+          }
+          if(!d.available){showError(d.message||'ลิงก์นี้ไม่สามารถใช้ลงนามได้');return;}
+          document.getElementById('stepNo').innerText=d.stepNo;
+          document.getElementById('stepName').innerText=d.stepName||'';
+          document.getElementById('topic').innerText=d.topic||'';
+          document.getElementById('approvalId').innerText=d.approvalId||'-';
+          document.getElementById('bookingId').innerText=d.bookingId||'-';
+          document.getElementById('useDateStr').innerText=d.useDateStr||'-';
+          document.getElementById('useTimeStr').innerText=d.useTimeStr||'-';
+          document.getElementById('roomName').innerText=d.roomName||'-';
+          document.getElementById('requester').innerText=d.requester||'-';
+          document.getElementById('headcount').innerText=d.headcount||'-';
+          document.getElementById('startStr').innerText=d.startStr||'-';
+          document.getElementById('endStr').innerText=d.endStr||'-';
+          document.getElementById('signerName').value=d.approverName||'';
+          document.getElementById('signerEmail').value=(d.approverEmail||'').split(',')[0]||'';
+          const memoLink=document.getElementById('memoLink');
+          if(d.initialMemoPdfUrl){memoLink.href=d.initialMemoPdfUrl;memoLink.style.display='inline-block';}
+          else{memoLink.removeAttribute('href');memoLink.style.display='none';}
+          const duplicateBox=document.getElementById('duplicateWarningBox');
+          if(d.duplicateWarning){
+            duplicateBox.style.display='block';
+            duplicateBox.innerHTML=`<b>หมายเหตุ:</b> ${escapeHtml(d.duplicateWarning)} กรุณาตรวจสอบวันที่ใช้ห้องและรหัสการจองก่อนลงนาม`;
+          }else{
+            duplicateBox.style.display='none';
+            duplicateBox.innerHTML='';
+          }
+          renderLayoutInfo(d);
+          document.getElementById('stepStatus').innerHTML=(Array.isArray(d.steps)?d.steps:[]).map(s=>`<span class="step-pill">${s.stepNo}. ${escapeHtml(s.stepName)}: <b>${escapeHtml(s.status)}</b>${s.signedAt?`<br><span class="small text-muted">${escapeHtml(s.signedAt)}</span>`:''}</span>`).join('');
+          document.getElementById('loading').style.display='none';
+          document.getElementById('errorBox').style.display='none';
+          document.getElementById('mainBox').style.display='block';
+        }catch(renderError){
+          console.error('Approval page render error:',renderError,d);
+          showError('ไม่สามารถแสดงข้อมูลลงนามได้: '+getClientErrorMessage(renderError));
+        }
+      }).withFailureHandler(e=>{
+        if(approvalLoadTimer){clearTimeout(approvalLoadTimer);approvalLoadTimer=null;}
+        console.error('getApprovalDetailsByToken failed:',e);
+        showError('ไม่สามารถโหลดข้อมูลลงนามได้: '+getClientErrorMessage(e));
+      }).getApprovalDetailsByToken(approvalToken);
+    }
+    function showError(msg){
+      const loading=document.getElementById('loading');
+      const mainBox=document.getElementById('mainBox');
+      const errorBox=document.getElementById('errorBox');
+      const errorText=document.getElementById('errorText');
+      if(loading) loading.style.display='none';
+      if(mainBox) mainBox.style.display='none';
+      if(errorText) errorText.innerText=msg||'เกิดข้อผิดพลาด';
+      if(errorBox) errorBox.style.display='block';
+    }
     function initCanvas(){const c=document.getElementById('sigCanvas');const ctx=c.getContext('2d');function pos(e){const r=c.getBoundingClientRect();const x=(e.clientX||(e.touches&&e.touches[0].clientX))-r.left;const y=(e.clientY||(e.touches&&e.touches[0].clientY))-r.top;return {x:x*c.width/r.width,y:y*c.height/r.height};}function start(e){isDrawing=true;const p=pos(e);ctx.beginPath();ctx.moveTo(p.x,p.y);e.preventDefault();}function draw(e){if(!isDrawing)return;const p=pos(e);ctx.lineWidth=3;ctx.lineCap='round';ctx.strokeStyle='#0b2e59';ctx.lineTo(p.x,p.y);ctx.stroke();e.preventDefault();}function end(){isDrawing=false;}c.addEventListener('mousedown',start);c.addEventListener('mousemove',draw);c.addEventListener('mouseup',end);c.addEventListener('mouseleave',end);c.addEventListener('touchstart',start,{passive:false});c.addEventListener('touchmove',draw,{passive:false});c.addEventListener('touchend',end);} 
     function clearSignature(){const c=document.getElementById('sigCanvas');c.getContext('2d').clearRect(0,0,c.width,c.height);fileSignatureBase64='';document.getElementById('signatureFile').value='';document.getElementById('signatureFilePreview').innerHTML='';}
     function canvasIsBlank(){const c=document.getElementById('sigCanvas');const blank=document.createElement('canvas');blank.width=c.width;blank.height=c.height;return c.toDataURL()===blank.toDataURL();}
